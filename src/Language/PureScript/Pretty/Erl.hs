@@ -44,10 +44,12 @@ literals = mkPattern' match
 
   match (EVar x) = return $ emit x
 
-
-
   match (EMapLiteral elts) = do
     elts' <- traverse (\(x,e) -> ((emit (runAtom x) <> emit "=>") <>) <$> prettyPrintErl' e) elts
+    return $ emit "#{" <> intercalate (emit ", ") elts' <> emit "}"
+
+  match (EMapPattern elts) = do
+    elts' <- traverse (\(x,e) -> ((emit (runAtom x) <> emit ":=") <>) <$> prettyPrintErl' e) elts
     return $ emit "#{" <> intercalate (emit ", ") elts' <> emit "}"
 
   match (EMapUpdate e elts) = do

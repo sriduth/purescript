@@ -15,16 +15,21 @@ runAtom :: Atom -> String
 runAtom at = case at of
   Atom (Just q) a -> atom q ++ ":" ++ atom a
   Atom Nothing a -> atom a
+
+atom :: String -> String
+atom s
+  | isValidAtom s = s
+  | otherwise = "'" ++ concatMap replaceChar s ++ "'"
   where
-  atom s | isValidAtom s = s
-  atom s = "'" ++ s ++ "'"
+  replaceChar '\'' = "\\'"
+  replaceChar c = [c]
 
   isValidAtom [] = False
   isValidAtom a@(fc:_) = isLower fc && all atomChar a && not (nameIsErlReserved a)
-    where
-      atomChar '_' = True
-      atomChar '@' = True
-      atomChar c = isAlpha c && isAscii c
+
+  atomChar '_' = True
+  atomChar '@' = True
+  atomChar c = isAlpha c && isAscii c
 
 atomModuleName :: ModuleName -> String
 atomModuleName (ModuleName pns) = intercalate "_" ((toAtomName . runProperName) `map` pns)

@@ -84,6 +84,8 @@ data Erl
 
   | EMapLiteral [(Atom, Erl)]
 
+  | EMapPattern [(Atom, Erl)]
+
   | EMapUpdate Erl [(Atom,Erl)]
 
   | ECaseOf Erl [(EBinder, Erl)]

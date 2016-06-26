@@ -31,7 +31,7 @@ import Language.PureScript.Names
 import Language.PureScript.Types
 import Language.PureScript.AST (SourceSpan)
 import Language.PureScript.Environment as E
-
+import qualified Language.PureScript.Constants as C
 import Language.PureScript.Traversals (sndM)
 
 import Language.PureScript.CodeGen.Erl.Common
@@ -50,11 +50,10 @@ moduleExports :: forall m .
   -> m String
 moduleExports (Module coms mn imps exps foreigns decls)  = do
   -- TODO nub temporary
-  let exps' = nub $ map (\a -> runAtom $ Atom Nothing $ toAtomName $ runIdent a) $ filter (not . upperIdent) exps
-      exps'' = map (++ "/0") (exps' ++ map runAtom dctorExports)
+  let exps' = nub $ map (\a -> (++ "/0") $ runAtom $ Atom Nothing $ runIdent a) exps
   -- traceM $ "Exports: " ++ show exps
   -- traceM $ "Exports/2: " ++ show dctorExports
-  pure $ "-export([" ++ intercalate ", " exps'' ++ "])."
+  pure $ "-export([" ++ intercalate ", " exps' ++ "])."
 
   where
     -- TODO must export actual dctor fn
@@ -72,13 +71,14 @@ moduleExports (Module coms mn imps exps foreigns decls)  = do
       in case (meta', val) of
         (Just IsTypeClassConstructor, _) -> Just $ identToTypeclassCtor ident
         (_, Constructor _ _ (ProperName ctor) _) ->
-          Just $ Atom Nothing (identToAtomName ident)
+          Just $ Atom Nothing (runIdent ident)
         _ -> Nothing
 
-identToTypeclassCtor a = Atom Nothing (identToAtomName a ++ "@tctor")
+identToTypeclassCtor a = Atom Nothing (runIdent a)
+identToDataCtor a = Atom Nothing (runIdent a)
 
-qualifiedToTypeclassCtor (Qualified (Just mn) ident) = Atom (Just $ atomModuleName mn) (toAtomName $ runIdent ident ++ "@tctor")
-qualifiedToTypeclassCtor (Qualified  Nothing ident) = Atom Nothing (toAtomName $ runIdent ident ++ "@tctor")
+qualifiedToTypeclassCtor (Qualified (Just mn) ident) = Atom (Just $ atomModuleName mn) (runIdent ident)
+qualifiedToTypeclassCtor (Qualified  Nothing ident) = Atom Nothing (runIdent ident)
 
 
 
@@ -121,10 +121,10 @@ moduleToErl (Module _ mn _ exps foreigns decls)  =
   topNonRecToErl (_,_,ty,meta) ident val = do
     erl <- valueToErl val
     let (_, _, _, meta') = extractAnn val
-    -- traceM $ "binder: " ++ (runIdent ident) ++ ": " ++ show meta' ++ "\n"
+    --traceM $ "binder: " ++ (runIdent ident) ++ ": " ++ show meta' ++ "\n"
     let ident' = case meta' of
           Just IsTypeClassConstructor -> identToTypeclassCtor ident
-          _ -> Atom Nothing $ identToAtomName ident
+          _ -> Atom Nothing $ runIdent ident
     pure $ EFunctionDef ident' [] erl
 
   bindToErl :: Bind Ann -> m [Erl]
@@ -140,22 +140,23 @@ moduleToErl (Module _ mn _ exps foreigns decls)  =
 
 
   qualifiedToErl' mn' isForeign ident =
-    Atom (Just $ atomModuleName mn' ++ (if isForeign then "@foreign" else "")) (identToAtomName ident)
+    Atom (Just $ atomModuleName mn' ++ (if isForeign then "@foreign" else "")) (runIdent ident)
 
   -- Top level definitions are everywhere fully qualified, variables are not.
-  qualifiedToErl (Qualified (Just mn') ident) | mn == mn' = Atom Nothing (identToAtomName ident)
+  qualifiedToErl (Qualified (Just mn') ident) | mn == mn' = Atom Nothing (runIdent ident)
   qualifiedToErl (Qualified (Just mn') ident) = qualifiedToErl' mn' False ident
 
   -- Top level definitions are everywhere fully qualified, variables are not.
-  qualifiedProperNameToErl (Qualified (Just mn') pn) | mn == mn' = Atom Nothing (toAtomName $ runProperName pn)
+  qualifiedProperNameToErl (Qualified (Just mn') pn) | mn == mn' = Atom Nothing (runProperName pn)
   qualifiedProperNameToErl (Qualified (Just mn') pn) =
-    Atom (Just $ atomModuleName mn') (toAtomName $ runProperName pn)
+    Atom (Just $ atomModuleName mn') (runProperName pn)
 
   qualifiedToVar (Qualified _ ident) = identToVar ident
 
   isFnTy :: Type -> Bool
   isFnTy (TypeApp (TypeApp fn _) _) | fn == E.tyFunction = True
   isFnTy (ForAll _ ty _) = isFnTy ty
+  isFnTy (ConstrainedType _ _) = True
   isFnTy _ = False
 
   valueToErl :: Expr Ann -> m Erl
@@ -174,6 +175,8 @@ moduleToErl (Module _ mn _ exps foreigns decls)  =
     return $ EApp (EAtomLiteral $ qualifiedToErl' mn' False ident) []
   valueToErl' _ (Var (_, _, _, Just IsForeign) ident) =
     error $ "Encountered an unqualified reference to a foreign ident " ++ showQualified showIdent ident
+  valueToErl' _ (Var _ (Qualified (Just (ModuleName [ProperName prim])) (Ident undef))) | prim == C.prim, undef == C.undefined =
+    return $ EAtomLiteral $ Atom Nothing C.undefined
   valueToErl' _ (Var _ ident) | isTopLevelBinding ident = return $ EApp (EAtomLiteral $ qualifiedToErl ident) []
   valueToErl' _ (Var _ ident) = return $ EVar $ qualifiedToVar ident
 
@@ -195,8 +198,8 @@ moduleToErl (Module _ mn _ exps foreigns decls)  =
     args' <- mapM valueToErl args
     case f of
       Var (_, _, _, Just IsNewtype) _ -> return (head args')
-      Var (_, _, _, Just (IsConstructor _ fields)) name | length args == length fields ->
-        return $ constructorLiteral (qualifiedToErl name) args'
+      Var (_, _, _, Just (IsConstructor _ fields)) (Qualified _ ident) | length args == length fields ->
+        return $ constructorLiteral (runIdent ident) args'
       Var (_, _, _, Just IsTypeClassConstructor) name ->
          return $ flip (foldl (\fn a -> EApp fn [a])) args' $ EApp (EAtomLiteral $ qualifiedToTypeclassCtor name) []
 
@@ -219,36 +222,37 @@ moduleToErl (Module _ mn _ exps foreigns decls)  =
     return $ EBlock (ds' ++ [ret])
 
 
-  valueToErl' _ (Constructor (_, _, _, Just IsNewtype) _ (ProperName _) _) = error "newtype ctor"
-  valueToErl' _ (Constructor (_, _, _, meta) _ (ProperName ctor) fields) =
-    -- traceShow meta $
+  valueToErl' _ (Constructor (_, _, _, Just IsNewtype) _ _ _) = error "newtype ctor"
+  valueToErl' _ (Constructor _ _ (ProperName ctor) fields) =
     let createFn =
-          let body = constructorLiteral (Atom Nothing $ toAtomName ctor) ((EVar . identToVar) `map` fields)
+          let body = constructorLiteral ctor ((EVar . identToVar) `map` fields)
           in foldr (\f inner -> EFun Nothing (identToVar f) inner) body fields
     in pure createFn
 
   valueToErl' _ x = error $ "Error: " ++ show x
 
-  constructorLiteral name args = ETupleLiteral (EAtomLiteral name : args)
+  constructorLiteral name args = ETupleLiteral (EAtomLiteral (Atom Nothing (toAtomName name)) : args)
+
 
   literalToValueErl :: Literal (Expr Ann) -> m Erl
-  literalToValueErl = literalToValueErl' valueToErl
+  literalToValueErl = literalToValueErl' EMapLiteral valueToErl
 
-  literalToValueErl' :: (a -> m Erl) -> Literal a -> m Erl
-  literalToValueErl' _ (NumericLiteral n) = return $ ENumericLiteral n
-  literalToValueErl' _ (StringLiteral s) = return $ EStringLiteral s
-  literalToValueErl' _ (CharLiteral c) = return $ ECharLiteral c
-  literalToValueErl' _ (BooleanLiteral b) = return $ boolToAtom b
-  literalToValueErl' f (ArrayLiteral xs) = do
+  literalToValueErl' ::  ([(Atom,Erl)] -> Erl) -> (a -> m Erl) -> Literal a -> m Erl
+  literalToValueErl' _ _ (NumericLiteral n) = return $ ENumericLiteral n
+  literalToValueErl' _ _ (StringLiteral s) = return $ EStringLiteral s
+  literalToValueErl' _ _ (CharLiteral c) = return $ ECharLiteral c
+  literalToValueErl' _ _ (BooleanLiteral b) = return $ boolToAtom b
+  literalToValueErl' _ f (ArrayLiteral xs) = do
     array <- EArrayLiteral <$> mapM f xs
     pure $ EApp (EAtomLiteral $ Atom (Just "array") "from_list") [array]
-  literalToValueErl' f (ObjectLiteral ps) = do
+  literalToValueErl' mapLiteral f (ObjectLiteral ps) = do
     pairs <- mapM (sndM f) ps
-    pure $ EMapLiteral $ map (\(a,e) -> (Atom Nothing a, e)) pairs
+    pure $ mapLiteral $ map (\(a,e) -> (Atom Nothing a, e)) pairs
 
   boolToAtom :: Bool -> Erl
   boolToAtom True = EAtomLiteral $ Atom Nothing "true"
   boolToAtom False = EAtomLiteral $ Atom Nothing "false"
+
 
   bindersToErl :: [Erl] -> [CaseAlternative Ann] -> m ([Erl], [(EFunBinder, Erl)])
   bindersToErl vals cases = do
@@ -280,12 +284,13 @@ moduleToErl (Module _ mn _ exps foreigns decls)  =
 
     err = EAtomLiteral $ Atom Nothing "compiler_error"
 
-  binderToErl' :: Binder a -> m Erl
+  binderToErl' :: Binder Ann -> m Erl
   binderToErl' (NullBinder _) = pure $ EVar "_"
   binderToErl' (VarBinder _ ident) = pure $ EVar $ identToVar ident
-  binderToErl' (LiteralBinder _ lit) = (literalToValueErl' binderToErl') lit
-  binderToErl' (ConstructorBinder _ _ (ctorName) binders) = do
+  binderToErl' (LiteralBinder _ lit) = (literalToValueErl' EMapPattern binderToErl') lit
+  binderToErl' (ConstructorBinder (_, _, _, Just IsNewtype) _ _ [b]) = binderToErl' b
+  binderToErl' (ConstructorBinder _ _ (Qualified _ (ProperName ctorName)) binders) = do
     args' <- mapM binderToErl' binders
-    let nameAtom = case ctorName of
-          Qualified _ pn -> Atom Nothing (toAtomName $ runProperName pn)
-    pure $ constructorLiteral nameAtom args'
+    pure $ constructorLiteral ctorName args'
+  binderToErl' (NamedBinder _ ident binder) = EVarBind (identToVar ident) <$> binderToErl' binder
+  binderToErl' b = error $ "Unhandled binder: " ++ show b
