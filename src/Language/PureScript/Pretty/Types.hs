@@ -10,37 +10,43 @@ module Language.PureScript.Pretty.Types
   , prettyPrintRow
   ) where
 
-import Data.Maybe (fromMaybe)
+import Prelude.Compat
 
 import Control.Arrow ((<+>))
-import Control.PatternArrows
+import Control.PatternArrows as PA
+
+import Data.Maybe (fromMaybe)
 
 import Language.PureScript.Crash
-import Language.PureScript.Types
-import Language.PureScript.Names
+import Language.PureScript.Environment
 import Language.PureScript.Kinds
+import Language.PureScript.Names
 import Language.PureScript.Pretty.Common
 import Language.PureScript.Pretty.Kinds
-import Language.PureScript.Environment
+import Language.PureScript.Types
 
 import Text.PrettyPrint.Boxes hiding ((<+>))
 
 typeLiterals :: Pattern () Type Box
 typeLiterals = mkPattern match
   where
-  match TypeWildcard = Just $ text "_"
+  match TypeWildcard{} = Just $ text "_"
   match (TypeVar var) = Just $ text var
+  match (TypeLevelString s) = Just . text $ show s
   match (PrettyPrintObject row) = Just $ prettyPrintRowWith '{' '}' row
   match (TypeConstructor ctor) = Just $ text $ runProperName $ disqualify ctor
-  match (TUnknown u) = Just $ text $ '_' : show u
+  match (TUnknown u) = Just $ text $ 't' : show u
   match (Skolem name s _ _) = Just $ text $ name ++ show s
   match REmpty = Just $ text "()"
   match row@RCons{} = Just $ prettyPrintRowWith '(' ')' row
+  match (BinaryNoParensType op l r) =
+    Just $ typeAsBox l <> text " " <> typeAsBox op <> text " " <> typeAsBox r
+  match (TypeOp op) = Just $ text $ showQualified runOpName op
   match _ = Nothing
 
 constraintsAsBox :: [Constraint] -> Box -> Box
-constraintsAsBox [(pn, tys)] ty = text "(" <> constraintAsBox pn tys <> text ") => " <> ty
-constraintsAsBox xs ty = vcat left (zipWith (\i (pn, tys) -> text (if i == 0 then "( " else ", ") <> constraintAsBox pn tys) [0 :: Int ..] xs) `before` (text ") => " <> ty)
+constraintsAsBox [(Constraint pn tys _)] ty = text "(" <> constraintAsBox pn tys <> text ") => " <> ty
+constraintsAsBox xs ty = vcat left (zipWith (\i (Constraint pn tys _) -> text (if i == 0 then "( " else ", ") <> constraintAsBox pn tys) [0 :: Int ..] xs) `before` (text ") => " <> ty)
 
 constraintAsBox :: Qualified (ProperName a) -> [Type] -> Box
 constraintAsBox pn tys = hsep 1 left (text (runProperName (disqualify pn)) : map typeAtomAsBox tys)
@@ -94,7 +100,7 @@ insertPlaceholders :: Type -> Type
 insertPlaceholders = everywhereOnTypesTopDown convertForAlls . everywhereOnTypes convert
   where
   convert (TypeApp (TypeApp f arg) ret) | f == tyFunction = PrettyPrintFunction arg ret
-  convert (TypeApp o r) | o == tyObject = PrettyPrintObject r
+  convert (TypeApp o r) | o == tyRecord = PrettyPrintObject r
   convert other = other
   convertForAlls (ForAll ident ty _) = go [ident] ty
     where
@@ -106,6 +112,12 @@ constrained :: Pattern () Type ([Constraint], Type)
 constrained = mkPattern match
   where
   match (ConstrainedType deps ty) = Just (deps, ty)
+  match _ = Nothing
+
+explicitParens :: Pattern () Type ((), Type)
+explicitParens = mkPattern match
+  where
+  match (ParensInType ty) = Just ((), ty)
   match _ = Nothing
 
 matchTypeAtom :: Pattern () Type Box
@@ -121,6 +133,7 @@ matchType = buildPrettyPrinter operators matchTypeAtom
                   , [ Wrap constrained $ \deps ty -> constraintsAsBox deps ty ]
                   , [ Wrap forall_ $ \idents ty -> keepSingleLinesOr (moveRight 2) (text ("forall " ++ unwords idents ++ ".")) ty ]
                   , [ Wrap kinded $ \k ty -> keepSingleLinesOr (moveRight 2) ty (text (":: " ++ prettyPrintKind k)) ]
+                  , [ Wrap explicitParens $ \_ ty -> ty ]
                   ]
 
   -- If both boxes span a single line, keep them on the same line, or else
@@ -137,14 +150,20 @@ forall_ = mkPattern match
   match _ = Nothing
 
 typeAtomAsBox :: Type -> Box
-typeAtomAsBox = fromMaybe (internalError "Incomplete pattern") . pattern matchTypeAtom () . insertPlaceholders
+typeAtomAsBox
+  = fromMaybe (internalError "Incomplete pattern")
+  . PA.pattern matchTypeAtom ()
+  . insertPlaceholders
 
 -- | Generate a pretty-printed string representing a Type, as it should appear inside parentheses
 prettyPrintTypeAtom :: Type -> String
 prettyPrintTypeAtom = render . typeAtomAsBox
 
 typeAsBox :: Type -> Box
-typeAsBox = fromMaybe (internalError "Incomplete pattern") . pattern matchType () . insertPlaceholders
+typeAsBox
+  = fromMaybe (internalError "Incomplete pattern")
+  . PA.pattern matchType ()
+  . insertPlaceholders
 
 -- | Generate a pretty-printed string representing a Type
 prettyPrintType :: Type -> String

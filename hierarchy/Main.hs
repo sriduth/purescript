@@ -30,6 +30,7 @@ import System.FilePath ((</>))
 import System.FilePath.Glob (glob)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStr, stderr)
+import System.IO.UTF8 (readUTF8File)
 
 import qualified Language.PureScript as P
 import qualified Paths_purescript as Paths
@@ -56,7 +57,7 @@ runModuleName (P.ModuleName pns) = intercalate "_" (P.runProperName `map` pns)
 
 readInput :: [FilePath] -> IO (Either P.MultipleErrors [P.Module])
 readInput paths = do
-  content <- mapM (\path -> (path, ) <$> readFile path) paths
+  content <- mapM (\path -> (path, ) <$> readUTF8File path) paths
   return $ map snd <$> P.parseModulesFromFiles id content
 
 compile :: HierarchyOptions -> IO ()
@@ -64,7 +65,7 @@ compile (HierarchyOptions inputGlob mOutput) = do
   input <- glob inputGlob
   modules <- readInput input
   case modules of
-    Left errs -> hPutStr stderr (P.prettyPrintMultipleErrors False errs) >> exitFailure
+    Left errs -> hPutStr stderr (P.prettyPrintMultipleErrors P.defaultPPEOptions errs) >> exitFailure
     Right ms -> do
       for_ ms $ \(P.Module _ _ moduleName decls _) ->
         let name = runModuleName moduleName
@@ -83,7 +84,7 @@ compile (HierarchyOptions inputGlob mOutput) = do
 
 superClasses :: P.Declaration -> [SuperMap]
 superClasses (P.TypeClassDeclaration sub _ supers@(_:_) _) =
-  fmap (\(P.Qualified _ super, _) -> SuperMap (Right (super, sub))) supers
+  fmap (\(P.Constraint (P.Qualified _ super) _ _) -> SuperMap (Right (super, sub))) supers
 superClasses (P.TypeClassDeclaration sub _ _ _) = [SuperMap (Left sub)]
 superClasses (P.PositionedDeclaration _ _ decl) = superClasses decl
 superClasses _ = []
@@ -112,4 +113,3 @@ main = execParser opts >>= compile
   infoModList = fullDesc <> headerInfo <> footerInfo
   headerInfo  = header   "hierarchy - Creates a GraphViz directed graph of PureScript TypeClasses"
   footerInfo  = footer $ "hierarchy " ++ showVersion Paths.version
-

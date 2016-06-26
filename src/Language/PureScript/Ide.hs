@@ -1,16 +1,31 @@
-{-# LANGUAGE ConstraintKinds       #-}
-{-# LANGUAGE FlexibleContexts      #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
+-----------------------------------------------------------------------------
+--
+-- Module      : Language.PureScript.Ide
+-- Description : Interface for the psc-ide-server
+-- Copyright   : Christoph Hegemann 2016
+-- License     : MIT (http://opensource.org/licenses/MIT)
+--
+-- Maintainer  : Christoph Hegemann <christoph.hegemann1337@gmail.com>
+-- Stability   : experimental
+--
+-- |
+-- Interface for the psc-ide-server
+-----------------------------------------------------------------------------
+
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE PackageImports        #-}
 {-# LANGUAGE TemplateHaskell       #-}
-{-# LANGUAGE TupleSections         #-}
 
-module Language.PureScript.Ide where
+module Language.PureScript.Ide
+       ( handleCommand
+         -- for tests
+       , printModules
+       ) where
 
 import           Prelude                            ()
 import           Prelude.Compat
 
+import           Control.Monad                      (unless)
 import           Control.Monad.Error.Class
 import           Control.Monad.IO.Class
 import           "monad-logger" Control.Monad.Logger
@@ -21,77 +36,94 @@ import           Data.Maybe                         (catMaybes, mapMaybe)
 import           Data.Monoid
 import           Data.Text                          (Text)
 import qualified Data.Text                          as T
+import qualified Language.PureScript                as P
 import qualified Language.PureScript.Ide.CaseSplit  as CS
 import           Language.PureScript.Ide.Command
 import           Language.PureScript.Ide.Completion
 import           Language.PureScript.Ide.Error
 import           Language.PureScript.Ide.Externs
 import           Language.PureScript.Ide.Filter
+import           Language.PureScript.Ide.Imports    hiding (Import)
 import           Language.PureScript.Ide.Matcher
 import           Language.PureScript.Ide.Pursuit
+import           Language.PureScript.Ide.Rebuild
 import           Language.PureScript.Ide.Reexports
 import           Language.PureScript.Ide.SourceFile
 import           Language.PureScript.Ide.State
 import           Language.PureScript.Ide.Types
+import           Language.PureScript.Ide.Util
 import           System.Directory
-import           System.FilePath
 import           System.Exit
-
+import           System.FilePath
 
 handleCommand :: (PscIde m, MonadLogger m, MonadError PscIdeError m) =>
                  Command -> m Success
+handleCommand (Load [] []) = loadAllModules
 handleCommand (Load modules deps) =
-    loadModulesAndDeps modules deps
-handleCommand (Type search filters) =
-    findType search filters
-handleCommand (Complete filters matcher) =
-    findCompletions filters matcher
+  loadModulesAndDeps modules deps
+handleCommand (Type search filters currentModule) =
+  findType search filters currentModule
+handleCommand (Complete filters matcher currentModule) =
+  findCompletions filters matcher currentModule
 handleCommand (Pursuit query Package) =
-    findPursuitPackages query
+  findPursuitPackages query
 handleCommand (Pursuit query Identifier) =
-    findPursuitCompletions query
+  findPursuitCompletions query
 handleCommand (List LoadedModules) =
-    printModules
+  printModules
 handleCommand (List AvailableModules) =
-    listAvailableModules
+  listAvailableModules
 handleCommand (List (Imports fp)) =
-    importsForFile fp
+  importsForFile fp
 handleCommand (CaseSplit l b e wca t) =
-    caseSplit l b e wca t
+  caseSplit l b e wca t
 handleCommand (AddClause l wca) =
-    pure $ addClause l wca
+  pure $ addClause l wca
+handleCommand (Import fp outfp _ (AddImplicitImport mn)) = do
+  rs <- addImplicitImport fp mn
+  answerRequest outfp rs
+handleCommand (Import fp outfp filters (AddImportForIdentifier ident)) = do
+  rs <- addImportForIdentifier fp ident filters
+  case rs of
+    Right rs' -> answerRequest outfp rs'
+    Left question -> pure $ CompletionResult (mapMaybe completionFromMatch question)
+handleCommand (Rebuild file) =
+  rebuildFile file
 handleCommand Cwd =
-    TextResult . T.pack <$> liftIO getCurrentDirectory
+  TextResult . T.pack <$> liftIO getCurrentDirectory
+handleCommand Reset = resetPscIdeState *> pure (TextResult "State has been reset.")
 handleCommand Quit = liftIO exitSuccess
 
-findCompletions :: (PscIde m, MonadLogger m) =>
-                   [Filter] -> Matcher -> m Success
-findCompletions filters matcher =
-  CompletionResult . getCompletions filters matcher <$> getAllModulesWithReexports
+findCompletions :: (PscIde m) =>
+                   [Filter] -> Matcher -> Maybe P.ModuleName -> m Success
+findCompletions filters matcher currentModule = do
+  modules <- getAllModulesWithReexportsAndCache currentModule
+  pure . CompletionResult . mapMaybe completionFromMatch . getCompletions filters matcher $ modules
 
-findType :: (PscIde m, MonadLogger m) =>
-            DeclIdent -> [Filter] -> m Success
-findType search filters =
-  CompletionResult . getExactMatches search filters <$> getAllModulesWithReexports
+findType :: (PscIde m) =>
+            DeclIdent -> [Filter] -> Maybe P.ModuleName -> m Success
+findType search filters currentModule = do
+  modules <- getAllModulesWithReexportsAndCache currentModule
+  pure . CompletionResult . mapMaybe completionFromMatch . getExactMatches search filters $ modules
 
-findPursuitCompletions :: (MonadIO m, MonadLogger m) =>
+findPursuitCompletions :: (MonadIO m) =>
                           PursuitQuery -> m Success
 findPursuitCompletions (PursuitQuery q) =
   PursuitResult <$> liftIO (searchPursuitForDeclarations q)
 
-findPursuitPackages :: (MonadIO m, MonadLogger m) =>
+findPursuitPackages :: (MonadIO m) =>
                        PursuitQuery -> m Success
 findPursuitPackages (PursuitQuery q) =
   PursuitResult <$> liftIO (findPackagesForModuleIdent q)
 
-loadExtern ::(PscIde m, MonadLogger m, MonadError PscIdeError m) =>
+loadExtern :: (PscIde m, MonadLogger m, MonadError PscIdeError m) =>
              FilePath -> m ()
 loadExtern fp = do
   m <- readExternFile fp
   insertModule m
 
 printModules :: (PscIde m) => m Success
-printModules = printModules' <$> getPscIdeState
+printModules = printModules' . pscIdeStateModules <$> getPscIdeState
 
 printModules' :: M.Map ModuleIdent [ExternDecl] -> Success
 printModules' = ModuleList . M.keys
@@ -109,7 +141,7 @@ listAvailableModules' dirs =
   let cleanedModules = filter (`notElem` [".", ".."]) dirs
   in map T.pack cleanedModules
 
-caseSplit :: (PscIde m, MonadLogger m, MonadError PscIdeError m) =>
+caseSplit :: (PscIde m, MonadError PscIdeError m) =>
   Text -> Int -> Int -> CS.WildcardAnnotations -> Text -> m Success
 caseSplit l b e csa t = do
   patterns <- CS.makePattern l b e csa <$> CS.caseSplit t
@@ -118,7 +150,7 @@ caseSplit l b e csa t = do
 addClause :: Text -> CS.WildcardAnnotations -> Success
 addClause t wca = MultilineTextResult (CS.addClause t wca)
 
-importsForFile :: (MonadIO m, MonadLogger m, MonadError PscIdeError m) =>
+importsForFile :: (MonadIO m, MonadError PscIdeError m) =>
                   FilePath -> m Success
 importsForFile fp = do
   imports <- getImportsForFile fp
@@ -179,6 +211,28 @@ loadModule mn = do
   $(logDebug) ("Loaded extern file at: " <> T.pack path)
   pure ("Loaded extern file at: " <> T.pack path)
 
+loadAllModules :: (PscIde m, MonadLogger m, MonadError PscIdeError m) => m Success
+loadAllModules = do
+  outputPath <- confOutputPath . envConfiguration <$> ask
+  cwd <- liftIO getCurrentDirectory
+  let outputDirectory = cwd </> outputPath
+  liftIO (doesDirectoryExist outputDirectory)
+    >>= flip unless (throwError (GeneralError "Couldn't locate your output directory"))
+  liftIO (getDirectoryContents outputDirectory)
+    >>= liftIO . traverse (getExternsPath outputDirectory)
+    >>= traverse_ loadExtern . catMaybes
+  pure (TextResult "All modules loaded.")
+  where
+    getExternsPath :: FilePath -> FilePath -> IO (Maybe FilePath)
+    getExternsPath outputDirectory d
+      | d `elem` [".", ".."] = pure Nothing
+      | otherwise = do
+          let file = outputDirectory </> d </> "externs.json"
+          ex <- doesFileExist file
+          if ex
+            then pure (Just file)
+            else pure Nothing
+
 filePathFromModule :: (PscIde m, MonadError PscIdeError m) =>
                       ModuleIdent -> m FilePath
 filePathFromModule moduleName = do
@@ -189,11 +243,3 @@ filePathFromModule moduleName = do
   if ex
     then pure path
     else throwError (ModuleFileNotFound moduleName)
-
--- | Taken from Data.Either.Utils
-maybeToEither :: MonadError e m =>
-                 e                      -- ^ (Left e) will be returned if the Maybe value is Nothing
-              -> Maybe a                -- ^ (Right a) will be returned if this is (Just a)
-              -> m a
-maybeToEither errorval Nothing = throwError errorval
-maybeToEither _ (Just normalval) = return normalval

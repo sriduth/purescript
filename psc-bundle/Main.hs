@@ -1,25 +1,11 @@
------------------------------------------------------------------------------
---
--- Module      :  psc-bundle
--- Copyright   :  (c) Phil Freeman 2015
--- License     :  MIT
---
--- Maintainer  :  Phil Freeman <paf31@cantab.net>
--- Stability   :  experimental
--- Portability :
---
--- | Bundles compiled PureScript modules for the browser.
---
------------------------------------------------------------------------------
-
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE RecordWildCards #-}
 
+-- | Bundles compiled PureScript modules for the browser.
 module Main (main) where
 
-import Data.Maybe 
 import Data.Traversable (for)
 import Data.Version (showVersion)
 
@@ -32,7 +18,8 @@ import Control.Monad.IO.Class
 import System.FilePath (takeFileName, takeDirectory)
 import System.FilePath.Glob (glob)
 import System.Exit (exitFailure)
-import System.IO (stderr, hPutStrLn)
+import System.IO (stderr, stdout, hPutStrLn, hSetEncoding, utf8)
+import System.IO.UTF8 (readUTF8File)
 import System.Directory (createDirectoryIfMissing)
 
 import Language.PureScript.Bundle
@@ -48,7 +35,6 @@ data Options = Options
   , optionsEntryPoints :: [String]
   , optionsMainModule  :: Maybe String
   , optionsNamespace   :: String
-  , optionsRequirePath :: Maybe FilePath
   } deriving Show
 
 -- | Given a filename, assuming it is in the correct place on disk, infer a ModuleIdentifier.
@@ -69,13 +55,13 @@ app Options{..} = do
     hPutStrLn stderr "psc-bundle: No input files."
     exitFailure
   input <- for inputFiles $ \filename -> do
-    js <- liftIO (readFile filename)
+    js <- liftIO (readUTF8File filename)
     mid <- guessModuleIdentifier filename
     length js `seq` return (mid, js)                                            -- evaluate readFile till EOF before returning, not to exhaust file handles
 
   let entryIds = map (`ModuleIdentifier` Regular) optionsEntryPoints
 
-  bundle input entryIds optionsMainModule optionsNamespace optionsRequirePath
+  bundle input entryIds optionsMainModule optionsNamespace
 
 -- | Command line options parser.
 options :: Parser Options
@@ -84,7 +70,6 @@ options = Options <$> some inputFile
                   <*> many entryPoint
                   <*> optional mainModule
                   <*> namespace
-                  <*> optional requirePath
   where
   inputFile :: Parser FilePath
   inputFile = strArgument $
@@ -116,17 +101,12 @@ options = Options <$> some inputFile
     <> showDefault
     <> help "Specify the namespace that PureScript modules will be exported to when running in the browser."
 
-  requirePath :: Parser FilePath
-  requirePath = strOption $
-       short 'r'
-    <> long "require-path"
-    <> help "The path prefix used in require() calls in the generated JavaScript [deprecated]"
-
 -- | Make it go.
 main :: IO ()
 main = do
+  hSetEncoding stdout utf8
+  hSetEncoding stderr utf8
   opts <- execParser (info (version <*> helper <*> options) infoModList)
-  when (isJust (optionsRequirePath opts)) $ hPutStrLn stderr "The require-path option is deprecated and will be removed in PureScript 0.9."
   output <- runExceptT (app opts)
   case output of
     Left err -> do

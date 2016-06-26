@@ -1,7 +1,4 @@
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 
 -- |
@@ -9,16 +6,15 @@
 --
 module Language.PureScript.TypeChecker.Monad where
 
-import Prelude ()
 import Prelude.Compat
+
+import Control.Arrow (second)
+import Control.Monad.Error.Class (MonadError(..))
+import Control.Monad.State
+import Control.Monad.Writer.Class (MonadWriter(..), listen, censor)
 
 import Data.Maybe
 import qualified Data.Map as M
-
-import Control.Arrow (second)
-import Control.Monad.State
-import Control.Monad.Error.Class (MonadError(..))
-import Control.Monad.Writer.Class (MonadWriter(..), listen, censor)
 
 import Language.PureScript.Environment
 import Language.PureScript.Errors
@@ -225,6 +221,7 @@ runCheck = runCheck' initEnvironment
 -- | Run a computation in the typechecking monad, failing with an error, or succeeding with a return value and the final @Environment@.
 runCheck' :: (Functor m) => Environment -> StateT CheckState m a -> m (a, Environment)
 runCheck' env check = second checkEnv <$> runStateT check (emptyCheckState env)
+
 -- | Make an assertion, failing with an error message
 guardWith :: (MonadError e m) => e -> Bool -> m ()
 guardWith _ True = return ()

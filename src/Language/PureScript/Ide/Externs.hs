@@ -1,102 +1,126 @@
-{-# LANGUAGE FlexibleContexts      #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
+-----------------------------------------------------------------------------
+--
+-- Module      : Language.PureScript.Ide.Externs
+-- Description : Handles externs files for psc-ide
+-- Copyright   : Christoph Hegemann 2016
+-- License     : MIT (http://opensource.org/licenses/MIT)
+--
+-- Maintainer  : Christoph Hegemann <christoph.hegemann1337@gmail.com>
+-- Stability   : experimental
+--
+-- |
+-- Handles externs files for psc-ide
+-----------------------------------------------------------------------------
+
 {-# LANGUAGE OverloadedStrings     #-}
-{-# LANGUAGE RecordWildCards       #-}
-{-# LANGUAGE ScopedTypeVariables   #-}
 
 module Language.PureScript.Ide.Externs
-  (
-    ExternDecl(..),
+  ( ExternDecl(..),
     ModuleIdent,
     DeclIdent,
-    Type,
-    Fixity(..),
     readExternFile,
     convertExterns,
     unwrapPositioned,
     unwrapPositionedRef
   ) where
 
-import           Prelude                              ()
+import           Prelude                       ()
 import           Prelude.Compat
 
 import           Control.Monad.Error.Class
 import           Control.Monad.IO.Class
-import           Data.Maybe                           (mapMaybe)
-import           Data.Text                            (Text)
-import qualified Data.Text                            as T
-import qualified Data.Text.IO                         as T
-import qualified Language.PureScript.AST.Declarations as D
-import qualified Language.PureScript.Externs          as PE
-import           Language.PureScript.Ide.CodecJSON
-import           Language.PureScript.Ide.Error        (PscIdeError (..))
+import           Data.Aeson                    (decodeStrict)
+import           Data.List                     (nub)
+import           Data.Maybe                    (mapMaybe)
+import           Data.Monoid
+import           Data.Text                     (Text)
+import qualified Data.Text                     as T
+import qualified Data.ByteString               as BS
+import           Language.PureScript.Ide.Error (PscIdeError (..))
 import           Language.PureScript.Ide.Types
-import qualified Language.PureScript.Names            as N
-import qualified Language.PureScript.Pretty           as PP
+import           Language.PureScript.Ide.Util
+
+import qualified Language.PureScript           as P
 
 readExternFile :: (MonadIO m, MonadError PscIdeError m) =>
-                  FilePath -> m PE.ExternsFile
+                  FilePath -> m P.ExternsFile
 readExternFile fp = do
-   parseResult <- liftIO (decodeT <$> T.readFile fp)
+   parseResult <- liftIO (decodeStrict <$> BS.readFile fp)
    case parseResult of
      Nothing -> throwError . GeneralError $ "Parsing the extern at: " ++ fp ++ " failed"
      Just externs -> pure externs
 
-moduleNameToText :: N.ModuleName -> Text
-moduleNameToText = T.pack . N.runModuleName
+moduleNameToText :: P.ModuleName -> Text
+moduleNameToText = T.pack . P.runModuleName
 
-properNameToText :: N.ProperName a -> Text
-properNameToText = T.pack . N.runProperName
+identToText :: P.Ident -> Text
+identToText  = T.pack . P.runIdent
 
-identToText :: N.Ident -> Text
-identToText  = T.pack . N.runIdent
-
-convertExterns :: PE.ExternsFile -> Module
-convertExterns ef = (moduleName, exportDecls ++ importDecls ++ otherDecls)
+convertExterns :: P.ExternsFile -> Module
+convertExterns ef = (moduleName, exportDecls ++ importDecls ++ decls ++ operatorDecls ++ tyOperatorDecls)
   where
-    moduleName = moduleNameToText (PE.efModuleName ef)
-    importDecls = convertImport <$> PE.efImports ef
-    exportDecls = mapMaybe (convertExport . unwrapPositionedRef) (PE.efExports ef)
-    -- Ignoring operator fixities for now since we're not using them
-    -- operatorDecls = convertOperator <$> PE.efFixities ef
-    otherDecls = mapMaybe convertDecl (PE.efDeclarations ef)
+    moduleName = moduleNameToText (P.efModuleName ef)
+    importDecls = convertImport <$> P.efImports ef
+    exportDecls = mapMaybe (convertExport . unwrapPositionedRef) (P.efExports ef)
+    operatorDecls = convertOperator <$> P.efFixities ef
+    tyOperatorDecls = convertTypeOperator <$> P.efTypeFixities ef
+    otherDecls = mapMaybe convertDecl (P.efDeclarations ef)
 
-convertImport :: PE.ExternsImport -> ExternDecl
+    typeClassFilter = foldMap removeTypeDeclarationsForClass (filter isTypeClassDeclaration otherDecls)
+    decls = nub $ appEndo typeClassFilter otherDecls
+
+removeTypeDeclarationsForClass :: ExternDecl -> Endo [ExternDecl]
+removeTypeDeclarationsForClass (TypeClassDeclaration n) = Endo (filter notDuplicate)
+  where notDuplicate (TypeDeclaration n' _) = runProperNameT n /= runProperNameT n'
+        notDuplicate (TypeSynonymDeclaration n' _) = runProperNameT n /= runProperNameT n'
+        notDuplicate _ = True
+removeTypeDeclarationsForClass _ = mempty
+
+isTypeClassDeclaration :: ExternDecl -> Bool
+isTypeClassDeclaration TypeClassDeclaration{} = True
+isTypeClassDeclaration _ = False
+
+convertImport :: P.ExternsImport -> ExternDecl
 convertImport ei = Dependency
-  (moduleNameToText (PE.eiModule ei))
+  (moduleNameToText (P.eiModule ei))
   []
-  (moduleNameToText <$> PE.eiImportedAs ei)
+  (moduleNameToText <$> P.eiImportedAs ei)
 
-convertExport :: D.DeclarationRef -> Maybe ExternDecl
-convertExport (D.ModuleRef mn) = Just (Export (moduleNameToText mn))
+convertExport :: P.DeclarationRef -> Maybe ExternDecl
+convertExport (P.ModuleRef mn) = Just (Export (moduleNameToText mn))
 convertExport _ = Nothing
 
-convertDecl :: PE.ExternsDeclaration -> Maybe ExternDecl
-convertDecl PE.EDType{..} = Just $
-  DataDecl
-  (properNameToText edTypeName)
-  (packAndStrip (PP.prettyPrintKind edTypeKind))
-convertDecl PE.EDTypeSynonym{..} = Just $
-  DataDecl
-  (properNameToText edTypeSynonymName)
-  (packAndStrip (PP.prettyPrintType edTypeSynonymType))
-convertDecl PE.EDDataConstructor{..} = Just $
-  DataDecl
-  (properNameToText edDataCtorName)
-  (packAndStrip (PP.prettyPrintType edDataCtorType))
-convertDecl PE.EDValue{..} = Just $
-  FunctionDecl
-  (identToText edValueName)
-  (packAndStrip (PP.prettyPrintType edValueType))
-convertDecl _ = Nothing
+convertDecl :: P.ExternsDeclaration -> Maybe ExternDecl
+convertDecl P.EDType{..} = Just $ TypeDeclaration edTypeName edTypeKind
+convertDecl P.EDTypeSynonym{..} = Just $
+  TypeSynonymDeclaration edTypeSynonymName edTypeSynonymType
+convertDecl P.EDDataConstructor{..} = Just $
+  DataConstructor (runProperNameT edDataCtorName) edDataCtorTypeCtor edDataCtorType
+convertDecl P.EDValue{..} = Just $
+  ValueDeclaration (identToText edValueName) edValueType
+convertDecl P.EDClass{..} = Just $ TypeClassDeclaration edClassName
+convertDecl P.EDInstance{} = Nothing
 
-packAndStrip :: String -> Text
-packAndStrip = T.unwords . fmap T.strip . T.lines . T.pack
+convertOperator :: P.ExternsFixity -> ExternDecl
+convertOperator P.ExternsFixity{..} =
+  ValueOperator
+    efOperator
+    (T.pack (P.showQualified (either P.runIdent P.runProperName) efAlias))
+    efPrecedence
+    efAssociativity
 
-unwrapPositioned :: D.Declaration -> D.Declaration
-unwrapPositioned (D.PositionedDeclaration _ _ x) = x
+convertTypeOperator :: P.ExternsTypeFixity -> ExternDecl
+convertTypeOperator P.ExternsTypeFixity{..} =
+  TypeOperator
+    efTypeOperator
+    (T.pack (P.showQualified P.runProperName efTypeAlias))
+    efTypePrecedence
+    efTypeAssociativity
+
+unwrapPositioned :: P.Declaration -> P.Declaration
+unwrapPositioned (P.PositionedDeclaration _ _ x) = x
 unwrapPositioned x = x
 
-unwrapPositionedRef :: D.DeclarationRef -> D.DeclarationRef
-unwrapPositionedRef (D.PositionedDeclarationRef _ _ x) = x
+unwrapPositionedRef :: P.DeclarationRef -> P.DeclarationRef
+unwrapPositionedRef (P.PositionedDeclarationRef _ _ x) = x
 unwrapPositionedRef x = x

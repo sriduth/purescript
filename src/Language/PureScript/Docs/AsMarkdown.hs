@@ -1,26 +1,23 @@
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE FlexibleContexts #-}
-
 module Language.PureScript.Docs.AsMarkdown
   ( renderModulesAsMarkdown
   , Docs
   , runDocs
   , modulesAsMarkdown
+  , codeToString
   ) where
 
-import Prelude ()
 import Prelude.Compat
 
 import Control.Monad (unless, zipWithM_)
-import Control.Monad.Writer (Writer, tell, execWriter)
 import Control.Monad.Error.Class (MonadError)
+import Control.Monad.Writer (Writer, tell, execWriter)
+
 import Data.Foldable (for_)
 import Data.List (partition)
 
-import qualified Language.PureScript as P
-
-import Language.PureScript.Docs.Types
 import Language.PureScript.Docs.RenderedCode
+import Language.PureScript.Docs.Types
+import qualified Language.PureScript as P
 import qualified Language.PureScript.Docs.Convert as Convert
 import qualified Language.PureScript.Docs.Render as Render
 
@@ -62,8 +59,6 @@ declAsMarkdown mn decl@Declaration{..} = do
     zipWithM_ (\f c -> tell' (childToString f c)) (First : repeat NotFirst) children
   spacer
 
-  for_ declFixity (\fixity -> fixityAsMarkdown fixity >> spacer)
-
   for_ declComments tell'
 
   unless (null instances) $ do
@@ -79,25 +74,25 @@ codeToString :: RenderedCode -> String
 codeToString = outputWith elemAsMarkdown
   where
   elemAsMarkdown (Syntax x)  = x
-  elemAsMarkdown (Ident x)   = x
+  elemAsMarkdown (Ident x _) = x
   elemAsMarkdown (Ctor x _)  = x
   elemAsMarkdown (Kind x)    = x
   elemAsMarkdown (Keyword x) = x
   elemAsMarkdown Space       = " "
 
-fixityAsMarkdown :: P.Fixity -> Docs
-fixityAsMarkdown (P.Fixity associativity precedence) =
-  tell' $ concat [ "_"
-                 , associativityStr
-                 , " / precedence "
-                 , show precedence
-                 , "_"
-                 ]
-  where
-  associativityStr = case associativity of
-    P.Infixl -> "left-associative"
-    P.Infixr -> "right-associative"
-    P.Infix  -> "non-associative"
+-- fixityAsMarkdown :: P.Fixity -> Docs
+-- fixityAsMarkdown (P.Fixity associativity precedence) =
+--   tell' $ concat [ "_"
+--                  , associativityStr
+--                  , " / precedence "
+--                  , show precedence
+--                  , "_"
+--                  ]
+--   where
+--   associativityStr = case associativity of
+--     P.Infixl -> "left-associative"
+--     P.Infixr -> "right-associative"
+--     P.Infix  -> "non-associative"
 
 childToString :: First -> ChildDeclaration -> String
 childToString f decl@ChildDeclaration{..} =

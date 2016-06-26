@@ -1,6 +1,5 @@
-{-# LANGUAGE RecordWildCards #-}
-
--- | Functions for creating `RenderedCode` values from data types in
+-- |
+-- Functions for creating `RenderedCode` values from data types in
 -- Language.PureScript.Docs.Types.
 --
 -- These functions are the ones that are used in markdown/html documentation
@@ -10,13 +9,15 @@
 
 module Language.PureScript.Docs.Render where
 
+import Prelude.Compat
+
 import Data.Maybe (maybeToList)
 import Data.Monoid ((<>))
-import qualified Language.PureScript as P
 
-import Language.PureScript.Docs.Types
 import Language.PureScript.Docs.RenderedCode
+import Language.PureScript.Docs.Types
 import Language.PureScript.Docs.Utils.MonoidExtras
+import qualified Language.PureScript as P
 
 renderDeclaration :: Declaration -> RenderedCode
 renderDeclaration = renderDeclarationWithOptions defaultRenderTypeOptions
@@ -58,23 +59,34 @@ renderDeclarationWithOptions opts Declaration{..} =
             syntax "("
             <> mintersperse (syntax "," <> sp) (map renderConstraint implies)
             <> syntax ")" <> sp <> syntax "<="
-    AliasDeclaration for (P.Fixity associativity precedence) ->
+
+    AliasDeclaration (P.Fixity associativity precedence) for@(P.Qualified _ alias) ->
       [ keywordFixity associativity
       , syntax $ show precedence
-      , ident $
-          either
-            (P.showQualified P.runIdent . dequalifyCurrentModule)
-            (P.showQualified P.runProperName . dequalifyCurrentModule)
-            for
+      , ident $ renderQualAlias for
       , keyword "as"
-      , ident . tail . init $ declTitle
+      , ident $ adjustAliasName alias declTitle
       ]
 
   where
+  renderType' :: P.Type -> RenderedCode
   renderType' = renderTypeWithOptions opts
-  dequalifyCurrentModule (P.Qualified mn a)
-    | mn == currentModule opts = P.Qualified Nothing a
-    | otherwise = P.Qualified mn a
+
+  renderQualAlias :: FixityAlias -> String
+  renderQualAlias (P.Qualified mn alias)
+    | mn == currentModule opts = renderAlias id alias
+    | otherwise = renderAlias (\f -> P.showQualified f . P.Qualified mn) alias
+
+  renderAlias
+    :: (forall a. (a -> String) -> a -> String)
+    -> Either (P.ProperName 'P.TypeName) (Either P.Ident (P.ProperName 'P.ConstructorName))
+    -> String
+  renderAlias f
+    = either (("type " ++) . f P.runProperName)
+    $ either (f P.runIdent) (f P.runProperName)
+
+  -- adjustAliasName (P.AliasType{}) title = drop 6 (init title)
+  adjustAliasName _ title = tail (init title)
 
 renderChildDeclaration :: ChildDeclaration -> RenderedCode
 renderChildDeclaration = renderChildDeclarationWithOptions defaultRenderTypeOptions
@@ -102,7 +114,7 @@ renderConstraint :: P.Constraint -> RenderedCode
 renderConstraint = renderConstraintWithOptions defaultRenderTypeOptions
 
 renderConstraintWithOptions :: RenderTypeOptions -> P.Constraint -> RenderedCode
-renderConstraintWithOptions opts (pn, tys) =
+renderConstraintWithOptions opts (P.Constraint pn tys _) =
   renderTypeWithOptions opts $ foldl P.TypeApp (P.TypeConstructor (fmap P.coerceProperName pn)) tys
 
 renderConstraints :: [P.Constraint] -> Maybe RenderedCode
