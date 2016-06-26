@@ -1,6 +1,4 @@
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
 -- |
 -- This module generates code in the simplified Javascript intermediate representation from Purescript code
@@ -11,7 +9,6 @@ module Language.PureScript.CodeGen.Erl
   , moduleExports
   ) where
 
-import Prelude ()
 import Prelude.Compat
 
 import Language.PureScript.CodeGen.Erl.AST as AST

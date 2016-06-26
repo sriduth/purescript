@@ -6,8 +6,6 @@ module Language.PureScript.CodeGen.Erl.AST where
 import Prelude ()
 import Prelude.Compat
 
-import Data.Char(isAscii, isAlpha)
-
 -- -- |
 -- -- Data type for simplified Javascript expressions
 -- --

@@ -3,10 +3,11 @@
 --
 module Language.PureScript.CodeGen.Erl.Common where
 
+import Prelude.Compat
+
 import Data.Char
 import Data.List (intercalate)
 
-import Language.PureScript.Crash
 import Language.PureScript.Names
 
 import Language.PureScript.CodeGen.Erl.AST

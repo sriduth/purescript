@@ -2,12 +2,13 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 
 module Main where
 
-
-import Prelude ()
 import Prelude.Compat hiding (lex)
+
+import Data.Bool (bool)
 
 import Control.Applicative
 import Control.Monad
@@ -44,8 +45,9 @@ import Make(buildMakeActions)
 import Data.Function (on)
 import Data.List (sortBy, groupBy)
 
-import JSON
+import Language.PureScript.Errors.JSON hiding (moduleName)
 
+import qualified System.Console.ANSI as ANSI
 
 data PSCMakeOptions = PSCMakeOptions
   { pscmInput        :: [FilePath]
@@ -60,14 +62,18 @@ data InputOptions = InputOptions
   { ioInputFiles  :: [FilePath]
   }
 
--- | Arguments: verbose, use JSON, warnings, errors
+
+
+-- | Argumnets: verbose, use JSON, warnings, errors
 printWarningsAndErrors :: Bool -> Bool -> P.MultipleErrors -> Either P.MultipleErrors a -> IO ()
 printWarningsAndErrors verbose False warnings errors = do
+  cc <- bool Nothing (Just P.defaultCodeColor) <$> ANSI.hSupportsANSI stderr
+  let ppeOpts = P.defaultPPEOptions { P.ppeCodeColor = cc, P.ppeFull = verbose }
   when (P.nonEmpty warnings) $
-    hPutStrLn stderr (P.prettyPrintMultipleWarnings verbose warnings)
+    hPutStrLn stderr (P.prettyPrintMultipleWarnings ppeOpts warnings)
   case errors of
     Left errs -> do
-      hPutStrLn stderr (P.prettyPrintMultipleErrors verbose errs)
+      hPutStrLn stderr (P.prettyPrintMultipleErrors ppeOpts errs)
       exitFailure
     Right _ -> return ()
 printWarningsAndErrors verbose True warnings errors = do
@@ -126,7 +132,7 @@ parseForeignModulesFromFiles files = do
   foreigns <- P.parU files $ \(path, file) ->
     case findModuleName (lines file) of
       Just name -> return (name, path)
-      Nothing -> throwError (P.errorMessage $ P.ErrorParsingFFIModule path)
+      Nothing -> throwError (P.errorMessage $ P.ErrorParsingFFIModule path Nothing) --TODO
   let grouped = groupBy ((==) `on` fst) $ sortBy (compare `on` fst) foreigns
   forM_ grouped $ \grp ->
     when (length grp > 1) $ do
@@ -202,7 +208,6 @@ options = P.Options <$> pure False
                     <*> noOpts
                     <*> verboseErrors
                     <*> (not <$> comments)
-                    <*> pure Nothing
                     <*> pure False
 
 pscMakeOptions :: Parser PSCMakeOptions

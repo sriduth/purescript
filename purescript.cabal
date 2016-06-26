@@ -341,11 +341,12 @@ executable pserlc
                    time -any, transformers -any, transformers-compat -any, Glob >= 0.7 && < 0.8,
                    aeson >= 0.8 && < 0.12, bytestring -any, utf8-string >= 1 && < 2,
 
+                   ansi-terminal >= 0.6.2 && < 0.7,
                    transformers-base >= 0.4.0 && < 0.5, lifted-base >= 0.2.3 && < 0.2.4, monad-control >= 1.0.0.0 && < 1.1
     main-is: Main.hs
     buildable: True
     hs-source-dirs: pserlc
-    other-modules: JSON, Make, Paths_purescript
+    other-modules: Make, Paths_purescript
     ghc-options: -Wall -O2 -fno-warn-unused-do-bind -threaded -rtsopts "-with-rtsopts=-N"
 
 executable psci
