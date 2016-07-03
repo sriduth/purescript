@@ -61,4 +61,10 @@ identifierParser = do
   pure (h:t)
 
 quotedAtomParser :: P.Parsec String u String
-quotedAtomParser = P.between (PC.char '\'') (PC.char '\'') (P.many1 $ PC.noneOf ['\''])
+quotedAtomParser = P.between (PC.char '\'') (PC.char '\'')
+  (P.many1 (PC.noneOf ['\'', '\\'] <|> atomEscapedCharParser))
+
+atomEscapedCharParser :: P.Parsec String u Char
+atomEscapedCharParser = do
+  _ <- PC.char '\\'
+  PC.char '\'' <|> PC.char '\\'

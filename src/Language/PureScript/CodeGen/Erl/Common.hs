@@ -42,13 +42,17 @@ toAtomName [] = []
 
 toVarName :: String -> String
 toVarName (h:t) =
-  let chars = toUpper h : t
-  in concatMap replaceChar chars
+ replaceFirst h ++ concatMap replaceChar t
   where
     replaceChar '.' = "@_"
     replaceChar '$' = "@dollar"
     replaceChar '\'' = "@prime"
     replaceChar x = [x]
+
+    replaceFirst x
+      | isAlpha x = [toUpper x]
+      | x == '_' = [x]
+      | otherwise = "V@1" ++ replaceChar x
 toVarName [] = []
 
 identToAtomName :: Ident -> String

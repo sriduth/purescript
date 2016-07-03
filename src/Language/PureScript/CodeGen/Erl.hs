@@ -187,12 +187,13 @@ moduleToErl (Module _ mn _ exps foreigns decls) foreignExports =
   valueToErl' _ (Var v@(_, _, Just ty, Just IsForeign) (Qualified (Just mn') ident)) | not (isFnTy ty) && mn == mn' =
     return $  EApp (EAtomLiteral $ qualifiedToErl' mn' True ident) []
   valueToErl' _ (Var v@(_, _, _, Just IsForeign) (Qualified (Just mn') ident)) | mn == mn' = do
-    -- traceShowM (mn, mn', ident)
     return $ EFunRef (qualifiedToErl' mn' True ident) 1
-  valueToErl' _ (Var v@(_, _, _, Just IsForeign) (Qualified (Just mn') ident)) =
+  valueToErl' _ (Var v@(_, _, fnty, Just IsForeign) (Qualified (Just mn') ident)) = do
+    traceM $ "Foreign other-module: " ++ runModuleName mn ++ " / " ++ runModuleName mn' ++ " - fnty: " ++ show fnty
     return $ EApp (EAtomLiteral $ qualifiedToErl' mn' False ident) []
   valueToErl' _ (Var (_, _, _, Just IsForeign) ident) =
     error $ "Encountered an unqualified reference to a foreign ident " ++ showQualified showIdent ident
+
   valueToErl' _ (Var _ (Qualified (Just (ModuleName [ProperName prim])) (Ident undef))) | prim == C.prim, undef == C.undefined =
     return $ EAtomLiteral $ Atom Nothing C.undefined
   valueToErl' _ (Var _ ident) | isTopLevelBinding ident = return $ EApp (EAtomLiteral $ qualifiedToErl ident) []
