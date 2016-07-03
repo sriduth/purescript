@@ -47,6 +47,7 @@ data SimpleErrorMessage
   | MissingFFIImplementations ModuleName [Ident]
   | UnusedFFIImplementations ModuleName [Ident]
   | InvalidFFIIdentifier ModuleName String
+  | InvalidFFIArity ModuleName String Int Int
   | CannotGetFileInfo FilePath
   | CannotReadFile FilePath
   | CannotWriteFile FilePath
@@ -208,6 +209,7 @@ errorCode em = case unwrapErrorMessage em of
   MissingFFIImplementations{} -> "MissingFFIImplementations"
   UnusedFFIImplementations{} -> "UnusedFFIImplementations"
   InvalidFFIIdentifier{} -> "InvalidFFIIdentifier"
+  InvalidFFIArity{} -> "InvalidFFIArity"
   CannotGetFileInfo{} -> "CannotGetFileInfo"
   CannotReadFile{} -> "CannotReadFile"
   CannotWriteFile{} -> "CannotWriteFile"
@@ -579,6 +581,14 @@ prettyPrintSingleError (PPEOptions codeColor full level showWiki) e = flip evalS
                 , line "Note that exported identifiers in FFI modules must be valid PureScript identifiers."
                 ]
             ]
+    renderSimpleErrorMessage (InvalidFFIArity mn ident m n) =
+      paras [ line $ "In the FFI module for " ++ markCode (runModuleName mn) ++ ":"
+            , indent . paras $
+                [ line $ "The identifier " ++ markCode ident ++ " was exported with arity " ++ show m
+                ++ " but imported with arity " ++ show n
+                ]
+            ]
+
     renderSimpleErrorMessage (MultipleFFIModules mn paths) =
       paras [ line $ "Multiple foreign module implementations have been provided for module " ++ markCode (runModuleName mn) ++ ": "
             , indent . paras $ map line paths

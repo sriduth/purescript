@@ -14,10 +14,18 @@ import Prelude.Compat
 import Language.PureScript.CodeGen.Erl.AST as AST
 
 import Data.Traversable
-import Data.List (intercalate, nub)
-import Data.Maybe (mapMaybe, maybeToList)
+import Data.Foldable
+import Data.List (intercalate, nub, find)
+import Data.Maybe (mapMaybe, maybeToList, catMaybes)
 import Control.Monad.Error.Class (MonadError(..))
-import Control.Monad.Reader (MonadReader)
+
+import Control.Monad.Reader (MonadReader(..), ReaderT(..), asks)
+import Control.Monad.Supply
+import Control.Monad.Trans.Class (MonadTrans(..))
+import Control.Monad.Trans.Control (MonadBaseControl(..))
+import Control.Monad.Trans.Except
+import Control.Monad.Writer.Class (MonadWriter(..))
+
 import Control.Monad.Supply.Class
 import Control.Monad(when)
 
@@ -44,8 +52,9 @@ freshNameErl = fmap (("_@" ++) . show) fresh
 moduleExports :: forall m .
     (Monad m, MonadReader Options m, MonadSupply m, MonadError MultipleErrors m)
   => Module Ann
+  -> [(String, Int)]
   -> m String
-moduleExports (Module coms mn imps exps foreigns decls)  = do
+moduleExports (Module coms mn imps exps foreigns decls) foreignExports  = do
   -- TODO nub temporary
   let exps' = nub $ map (\a -> (++ "/0") $ runAtom $ Atom Nothing $ runIdent a) exps
   -- traceM $ "Exports: " ++ show exps
@@ -91,24 +100,36 @@ isTopLevelBinding (Qualified Nothing _) = False
 moduleToErl :: forall m .
     (Monad m, MonadReader Options m, MonadSupply m, MonadError MultipleErrors m)
   => Module Ann
-  -- -> Maybe Erl
+  -> [(String, Int)]
   -> m [Erl]
-moduleToErl (Module _ mn _ exps foreigns decls)  =
+moduleToErl (Module _ mn _ exps foreigns decls) foreignExports =
   rethrow (addHint (ErrorInModule mn)) $ do
-    -- traceShowM ("Module", mn, foreigns)
     erlDecls <- mapM topBindToErl decls
-    let foreignExports = mapMaybe reExportForeign foreigns
-    return $ foreignExports ++ concat erlDecls
+    traverse_ checkExport foreigns
+    return $ mapMaybe reExportForeign foreigns ++ concat erlDecls
   where
 
+  reExportForeign :: (Ident, Type) -> Maybe Erl
   reExportForeign (ident, ty) | ident `elem` exps = Just $
     if isFnTy ty then
-      -- EFunctionDef (Atom Nothing $ identToAtomName ident) ["X"] $ EApp (EAtomLiteral $ qualifiedToErl' mn True ident) [EVar "X"]
-      EFunctionDef (Atom Nothing $ identToAtomName ident) [] $
-        EFun Nothing "X" $ EApp (EAtomLiteral $ qualifiedToErl' mn True ident) [EVar "X"]
+        -- EFunctionDef (Atom Nothing $ identToAtomName ident) ["X"] $ EApp (EAtomLiteral $ qualifiedToErl' mn True ident) [EVar "X"]
+        EFunctionDef (Atom Nothing $ identToAtomName ident) [] $
+          EFun Nothing "X" $ EApp (EAtomLiteral $ qualifiedToErl' mn True ident) [EVar "X"]
     else
-      EFunctionDef (Atom Nothing $ identToAtomName ident) [] $ EApp (EAtomLiteral $ qualifiedToErl' mn True ident) []
+        EFunctionDef (Atom Nothing $ identToAtomName ident) [] $ EApp (EAtomLiteral $ qualifiedToErl' mn True ident) []
   reExportForeign _ = Nothing
+
+  checkExport :: (Ident, Type) -> m ()
+  checkExport (ident,ty) =
+    case (findExport (runIdent ident), tyArity ty) of
+      (Just m, n) | m /= min 1 n ->
+        throwError . errorMessage $ InvalidFFIArity mn (runIdent ident) m n
+      (Nothing, _) ->
+        throwError . errorMessage $ MissingFFIImplementations mn [ident]
+      _ -> pure ()
+
+  findExport n = snd <$> find ((n==) . fst) foreignExports
+  -- findExport n = snd <$> find (\(m, _) -> m == n) foreignExports
 
   topBindToErl :: Bind Ann -> m [Erl]
   topBindToErl (NonRec ann ident val) = return <$> topNonRecToErl ann ident val
@@ -133,9 +154,6 @@ moduleToErl (Module _ mn _ exps foreigns decls)  =
     erl <- valueToErl' (Just ident) val
     pure $ EVarBind (identToVar ident) erl
 
-
-
-
   qualifiedToErl' mn' isForeign ident =
     Atom (Just $ atomModuleName mn' ++ (if isForeign then "@foreign" else "")) (runIdent ident)
 
@@ -151,10 +169,13 @@ moduleToErl (Module _ mn _ exps foreigns decls)  =
   qualifiedToVar (Qualified _ ident) = identToVar ident
 
   isFnTy :: Type -> Bool
-  isFnTy (TypeApp (TypeApp fn _) _) | fn == E.tyFunction = True
-  isFnTy (ForAll _ ty _) = isFnTy ty
-  isFnTy (ConstrainedType _ _) = True
-  isFnTy _ = False
+  isFnTy = (>0) . tyArity
+
+  tyArity :: Type -> Int
+  tyArity (TypeApp (TypeApp fn _) ty) | fn == E.tyFunction = 1 + tyArity ty
+  tyArity (ForAll _ ty _) = tyArity ty
+  tyArity (ConstrainedType _ ty) = 1 + tyArity ty
+  tyArity _ = 0
 
   valueToErl :: Expr Ann -> m Erl
   valueToErl = valueToErl' Nothing

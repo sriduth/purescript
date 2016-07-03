@@ -3,6 +3,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Main where
 
@@ -88,14 +89,12 @@ compile PSCMakeOptions{..} = do
   when (null input && not pscmJSONErrors) $ do
     hPutStrLn stderr "pserlc: No input files."
     exitFailure
-  let (erlFiles, pursFiles) = partition (isSuffixOf ".erl") input
-  moduleFiles <- readInput (InputOptions pursFiles)
-  inputForeign <- globWarningOnMisses (unless pscmJSONErrors . warnFileTypeNotFound) pscmForeignInput
-  foreignFiles <- forM (inputForeign ++ erlFiles) (\inFile -> (inFile,) <$> readUTF8File inFile)
+  moduleFiles <- readInput input
   (makeErrors, makeWarnings) <- runMake pscmOpts $ do
-    (ms, foreigns) <- parseInputs moduleFiles foreignFiles
-    let filePathMap = M.fromList $ map (\(fp, P.Module _ _ mn _ _) -> (mn, fp)) ms
-        makeActions = buildMakeActions pscmOutputDir filePathMap foreigns pscmUsePrefix
+    ms <- P.parseModulesFromFiles id moduleFiles
+    let filePathMap = M.fromList $ map (\(fp, P.Module _ _ mn _ _) -> (mn, Right fp)) ms
+    foreigns <- inferForeignModules' "erl" filePathMap
+    let makeActions = buildMakeActions pscmOutputDir filePathMap foreigns pscmUsePrefix
     P.make makeActions (map snd ms)
   printWarningsAndErrors (P.optionsVerboseErrors pscmOpts) pscmJSONErrors makeWarnings makeErrors
   exitSuccess
@@ -112,41 +111,8 @@ globWarningOnMisses warn = concatMapM globWithWarning
     return paths
   concatMapM f = liftM concat . mapM f
 
-readInput :: InputOptions -> IO [(Either P.RebuildPolicy FilePath, String)]
-readInput InputOptions{..} = forM ioInputFiles $ \inFile -> (Right inFile, ) <$> readUTF8File inFile
-
-parseInputs :: (MonadError P.MultipleErrors m, MonadWriter P.MultipleErrors m)
-            => [(Either P.RebuildPolicy FilePath, String)]
-            -> [(FilePath, ForeignErl)]
-            -> m ([(Either P.RebuildPolicy FilePath, P.Module)], M.Map P.ModuleName FilePath)
-parseInputs modules foreigns =
-  (,) <$> P.parseModulesFromFiles (either (const "") id) modules
-      <*> parseForeignModulesFromFiles foreigns
-
-type ForeignErl = String
-
-parseForeignModulesFromFiles :: (MonadError P.MultipleErrors m, MonadWriter P.MultipleErrors m)
-                             => [(FilePath, ForeignErl)]
-                             -> m (M.Map P.ModuleName FilePath)
-parseForeignModulesFromFiles files = do
-  foreigns <- P.parU files $ \(path, file) ->
-    case findModuleName (lines file) of
-      Just name -> return (name, path)
-      Nothing -> throwError (P.errorMessage $ P.ErrorParsingFFIModule path Nothing) --TODO
-  let grouped = groupBy ((==) `on` fst) $ sortBy (compare `on` fst) foreigns
-  forM_ grouped $ \grp ->
-    when (length grp > 1) $ do
-      let mn = fst (head grp)
-          paths = map snd grp
-      tell $ P.errorMessage $ P.MultipleFFIModules mn paths
-  return $ M.fromList foreigns
-
-findModuleName :: [String] -> Maybe P.ModuleName
-findModuleName = msum . map parseComment
-  where
-  parseComment :: String -> Maybe P.ModuleName
-  parseComment s = either (const Nothing) Just $
-    lex "" s >>= P.runTokenParser "" (P.symbol' "%" *> P.reserved "module" *> moduleName <* PS.eof)
+readInput :: [FilePath] -> IO [(FilePath, String)]
+readInput inputFiles = forM inputFiles $ \inFile -> (inFile, ) <$> readUTF8File inFile
 
 inputFile :: Parser FilePath
 inputFile = strArgument $

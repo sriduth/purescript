@@ -18,6 +18,7 @@ module Language.PureScript.Make
   , readTextFile
   , buildMakeActions
   , inferForeignModules
+  , inferForeignModules'
   ) where
 
 import Prelude.Compat
@@ -289,19 +290,27 @@ makeIO f io = do
 readTextFile :: FilePath -> Make String
 readTextFile path = makeIO (const (ErrorMessage [] $ CannotReadFile path)) $ readUTF8File path
 
--- | Infer the module name for a module by looking for the same filename with
--- a .js extension.
 inferForeignModules
   :: forall m
    . MonadIO m
   => M.Map ModuleName (Either RebuildPolicy FilePath)
   -> m (M.Map ModuleName FilePath)
-inferForeignModules = fmap (M.mapMaybe id) . traverse inferForeignModule
+inferForeignModules = inferForeignModules' "js"
+
+-- | Infer the module name for a module by looking for the same filename with
+-- a .js extension.
+inferForeignModules'
+  :: forall m
+   . MonadIO m
+  => String
+  -> M.Map ModuleName (Either RebuildPolicy FilePath)
+  -> m (M.Map ModuleName FilePath)
+inferForeignModules' suffix = fmap (M.mapMaybe id) . traverse inferForeignModule
   where
     inferForeignModule :: Either RebuildPolicy FilePath -> m (Maybe FilePath)
     inferForeignModule (Left _) = return Nothing
     inferForeignModule (Right path) = do
-      let jsFile = replaceExtension path "js"
+      let jsFile = replaceExtension path suffix
       exists <- liftIO $ doesFileExist jsFile
       if exists
         then return (Just jsFile)
