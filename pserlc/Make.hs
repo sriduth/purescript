@@ -1,8 +1,6 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -18,57 +16,37 @@ import Control.Monad hiding (sequence)
 import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.Writer.Class (MonadWriter(..))
 import Control.Monad.Trans.Class (MonadTrans(..))
-import Control.Monad.Trans.Except
 import Control.Monad.IO.Class
-import Control.Monad.Reader (MonadReader(..), ReaderT(..), asks)
-import Control.Monad.Logger
 import Control.Monad.Supply
-import Control.Monad.Base (MonadBase(..))
-import Control.Monad.Trans.Control (MonadBaseControl(..))
 
-import Control.Concurrent.Lifted as C
 
-import Data.List (foldl', sort)
-import Data.Maybe (fromMaybe, catMaybes, isJust)
+import Data.List (foldl', sort, intercalate)
+import Data.Maybe (fromMaybe)
 import Data.Time.Clock
 import Data.String (fromString)
 import Data.Foldable (for_)
-import Data.Traversable (for)
 import Data.Version (showVersion)
-import Data.Aeson (encode, decode)
-import qualified Data.ByteString.Lazy as B
-import qualified Data.ByteString.UTF8 as BU8
-import qualified Data.Set as S
 import qualified Data.Map as M
 
-import Data.Char (toUpper, toLower)
+import Data.Char (toLower)
 import Data.List (intercalate)
 
 
 import System.Directory
-       (doesFileExist, getModificationTime, createDirectoryIfMissing, getCurrentDirectory)
-import System.FilePath ((</>), takeDirectory, makeRelative, splitPath, normalise)
+       (doesFileExist, getModificationTime, createDirectoryIfMissing)
+import System.FilePath ((</>), takeDirectory)
 import System.IO.Error (tryIOError)
 import System.IO.UTF8 (readUTF8File, writeUTF8File)
 
 import Language.PureScript.CodeGen.Erl as J
-import Language.PureScript (Make, runMake, RebuildPolicy, ProgressMessage, Externs, ModuleName)
+import Language.PureScript (Make, RebuildPolicy, ProgressMessage, Externs)
 import Language.PureScript.Make (MakeActions(..), renderProgressMessage)
 
 import Language.PureScript.Crash
-import Language.PureScript.AST
-import Language.PureScript.Externs
 import Language.PureScript.Environment
 import Language.PureScript.Errors
-import Language.PureScript.Linter
-import Language.PureScript.ModuleDependencies
 import Language.PureScript.Names
-import Language.PureScript.Options
 import Language.PureScript.Pretty
-import Language.PureScript.Pretty.Common(SMap(..))
-import Language.PureScript.Renamer
-import Language.PureScript.Sugar
-import Language.PureScript.TypeChecker
 import Language.PureScript.Parser.Erl
 
 import Paths_purescript as Paths
@@ -121,7 +99,6 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
         when (requiresForeign m) $ throwError . errorMessage $ MissingFFIModule mn
         return []
 
-    traceM $ "codegen: " ++ runModuleName mn ++ ", " ++ show foreignExports
     rawErl <- J.moduleToErl m foreignExports
     let pretty = prettyPrintErl rawErl
     let moduleName = runModuleName mn
@@ -135,7 +112,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
           "-compile(nowarn_unused_vars)."  -- consider using _ vars
           ]
     exports <- J.moduleExports m foreignExports
-    let erl = unlines $ map ("% " ++) prefix ++ [module', exports, pretty] ++ directives
+    let erl = unlines $ map ("% " ++) prefix ++ [ module', exports ] ++ directives ++ [ pretty ]
     lift $ do
       writeTextFile outFile (fromString erl)
       for_ (mn `M.lookup` foreigns) (readTextFile >=> writeTextFile foreignFile)

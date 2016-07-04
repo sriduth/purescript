@@ -16,9 +16,10 @@ import Language.PureScript.CodeGen.Erl.AST as AST
 import Data.Traversable
 import Data.Foldable
 import Data.List (intercalate, nub, find)
-import Data.Maybe (mapMaybe, maybeToList, catMaybes)
+import Data.Maybe (mapMaybe, maybeToList, catMaybes, fromMaybe)
 import Control.Monad.Error.Class (MonadError(..))
 
+import Control.Arrow (first)
 import Control.Monad.Reader (MonadReader(..), ReaderT(..), asks)
 import Control.Monad.Supply
 import Control.Monad.Trans.Class (MonadTrans(..))
@@ -102,44 +103,53 @@ moduleToErl :: forall m .
   => Module Ann
   -> [(String, Int)]
   -> m [Erl]
-moduleToErl (Module _ mn _ exps foreigns decls) foreignExports =
+moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
   rethrow (addHint (ErrorInModule mn)) $ do
     erlDecls <- mapM topBindToErl decls
     traverse_ checkExport foreigns
-    return $ mapMaybe reExportForeign foreigns ++ concat erlDecls
+    return $ map reExportForeign foreigns ++ concat erlDecls
   where
 
-  reExportForeign :: (Ident, Type) -> Maybe Erl
-  reExportForeign (ident, ty) | ident `elem` exps = Just $
-    if isFnTy ty then
-        -- EFunctionDef (Atom Nothing $ identToAtomName ident) ["X"] $ EApp (EAtomLiteral $ qualifiedToErl' mn True ident) [EVar "X"]
-        EFunctionDef (Atom Nothing $ identToAtomName ident) [] $
-          EFun Nothing "X" $ EApp (EAtomLiteral $ qualifiedToErl' mn True ident) [EVar "X"]
-    else
-        EFunctionDef (Atom Nothing $ identToAtomName ident) [] $ EApp (EAtomLiteral $ qualifiedToErl' mn True ident) []
-  reExportForeign _ = Nothing
+-- foldl (\fn a -> EApp fn [a])) args'
+
+  reExportForeign :: (Ident, Type) -> Erl
+  reExportForeign (ident, ty) = --    | isFnTy ty =
+      let arity = exportArity ident
+          args = map (\m -> "X" ++ show m) [ 1..arity ]
+          body = EApp (EAtomLiteral $ qualifiedToErl' mn True ident) (map EVar args)
+          fun = foldl (\fun' x -> EFun Nothing x fun') body args
+      in EFunctionDef (Atom Nothing $ identToAtomName ident) [] fun
+
+      -- foldl (\fn a -> EApp fn [a])) args'
+
+            -- EFunctionDef (Atom Nothing $ identToAtomName ident) ["X"] $ EApp (EAtomLiteral $ qualifiedToErl' mn True ident) [EVar "X"]
+        -- EFunctionDef (Atom Nothing $ identToAtomName ident) [] $
+        --   EFun Nothing "X" $ EApp (EAtomLiteral $ qualifiedToErl' mn True ident) [EVar "X"]
+    -- | otherwise =
+    --     EFunctionDef (Atom Nothing $ identToAtomName ident) [] $ EApp (EAtomLiteral $ qualifiedToErl' mn True ident) []
+
+  exportArity :: Ident -> Int
+  exportArity ident = fromMaybe 0 $ findExport $ runIdent ident
 
   checkExport :: (Ident, Type) -> m ()
   checkExport (ident,ty) =
     case (findExport (runIdent ident), tyArity ty) of
-      (Just m, n) | m /= min 1 n ->
+      (Just m, n) | m > n ->
         throwError . errorMessage $ InvalidFFIArity mn (runIdent ident) m n
       (Nothing, _) ->
         throwError . errorMessage $ MissingFFIImplementations mn [ident]
       _ -> pure ()
 
   findExport n = snd <$> find ((n==) . fst) foreignExports
-  -- findExport n = snd <$> find (\(m, _) -> m == n) foreignExports
 
   topBindToErl :: Bind Ann -> m [Erl]
   topBindToErl (NonRec ann ident val) = return <$> topNonRecToErl ann ident val
   topBindToErl (Rec vals) = forM vals (uncurry . uncurry $ topNonRecToErl)
 
   topNonRecToErl ::  Ann -> Ident -> Expr Ann -> m Erl
-  topNonRecToErl (_,_,ty,meta) ident val = do
+  topNonRecToErl _ ident val = do
     erl <- valueToErl val
     let (_, _, _, meta') = extractAnn val
-    --traceM $ "binder: " ++ (runIdent ident) ++ ": " ++ show meta' ++ "\n"
     let ident' = case meta' of
           Just IsTypeClassConstructor -> identToTypeclassCtor ident
           _ -> Atom Nothing $ runIdent ident
@@ -184,15 +194,15 @@ moduleToErl (Module _ mn _ exps foreigns decls) foreignExports =
   valueToErl' _ (Literal (pos, _, _, _) l) =
     maybe id rethrowWithPosition pos $ literalToValueErl l
 
-  valueToErl' _ (Var v@(_, _, Just ty, Just IsForeign) (Qualified (Just mn') ident)) | not (isFnTy ty) && mn == mn' =
-    return $  EApp (EAtomLiteral $ qualifiedToErl' mn' True ident) []
-  valueToErl' _ (Var v@(_, _, _, Just IsForeign) (Qualified (Just mn') ident)) | mn == mn' = do
-    return $ EFunRef (qualifiedToErl' mn' True ident) 1
-  valueToErl' _ (Var v@(_, _, fnty, Just IsForeign) (Qualified (Just mn') ident)) = do
-    traceM $ "Foreign other-module: " ++ runModuleName mn ++ " / " ++ runModuleName mn' ++ " - fnty: " ++ show fnty
-    return $ EApp (EAtomLiteral $ qualifiedToErl' mn' False ident) []
-  valueToErl' _ (Var (_, _, _, Just IsForeign) ident) =
-    error $ "Encountered an unqualified reference to a foreign ident " ++ showQualified showIdent ident
+  -- valueToErl' _ (Var v@(_, _, Just ty, Just IsForeign) (Qualified (Just mn') ident)) | not (isFnTy ty) && mn == mn' =
+  --   return $  EApp (EAtomLiteral $ qualifiedToErl' mn' True ident) []
+  -- valueToErl' _ (Var v@(_, _, _, Just IsForeign) (Qualified (Just mn') ident)) | mn == mn' =
+  --   return $ EFunRef (qualifiedToErl' mn' True ident) 1
+  -- valueToErl' _ (Var v@(_, _, fnty, Just IsForeign) (Qualified (Just mn') ident)) = do
+  --   traceM $ "Foreign other-module: " ++ runModuleName mn ++ " / " ++ runModuleName mn' ++ " - fnty: " ++ show fnty
+  --   return $ EApp (EAtomLiteral $ qualifiedToErl' mn' False ident) []
+  -- valueToErl' _ (Var (_, _, _, Just IsForeign) ident) =
+  --   error $ "Encountered an unqualified reference to a foreign ident " ++ showQualified showIdent ident
 
   valueToErl' _ (Var _ (Qualified (Just (ModuleName [ProperName prim])) (Ident undef))) | prim == C.prim, undef == C.undefined =
     return $ EAtomLiteral $ Atom Nothing C.undefined
@@ -210,7 +220,7 @@ moduleToErl (Module _ mn _ exps foreigns decls) foreignExports =
   valueToErl' _ (ObjectUpdate _ o ps) = do
     obj <- valueToErl o
     sts <- mapM (sndM valueToErl) ps
-    return $ EMapUpdate obj (map (\(s,e) -> (Atom Nothing s, e)) sts)
+    return $ EMapUpdate obj (map (first (Atom Nothing)) sts)
 
   valueToErl' _ e@App{} = do
     let (f, args) = unApp e []
