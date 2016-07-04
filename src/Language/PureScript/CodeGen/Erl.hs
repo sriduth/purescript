@@ -117,7 +117,7 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
       let arity = exportArity ident
           args = map (\m -> "X" ++ show m) [ 1..arity ]
           body = EApp (EAtomLiteral $ qualifiedToErl' mn True ident) (map EVar args)
-          fun = foldl (\fun' x -> EFun Nothing x fun') body args
+          fun = foldr (\x fun' -> EFun Nothing x fun') body args
       in EFunctionDef (Atom Nothing $ identToAtomName ident) [] fun
 
       -- foldl (\fn a -> EApp fn [a])) args'
