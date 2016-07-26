@@ -25,12 +25,15 @@ Top level declarations are uniformly output as nullary functions. Identifiers ar
 | `Int` | `integer()` | Arbitrary precision - no longer a `Bounded` |
 | `Number` | `float()` |
 | `Boolean` | `boolean()` |
-| `String` | `string()` |
+| `String` | `string()` | Should consider `binary()` representation |
 | `Array` | `array()` | Not to be confused with erlang `[]` list syntax. |
-| Records | |
+| Records | `#{atom() => any()}` | Map keyed by atoms |
 | Tagged union | Tuple with tag element | e.g. `Some 42` is `{some, 42}` |
 | Newtype | as underlying type |
 | Functions | Function (arity 1 - but see FFI) |
+| `Data.Function.Uncurried.FnX` | Function (arity `X`) | Actual higher arity functions - for 'uncurried' functions from tuples see `Erl.Data.Tuple`  | 
+| `Erl.Data.List`  | `list()`| Native lists via  `purescript-erl-lists` |
+| `Erl.Data.Tuple` | `tuple()` | Native tuples via `purescript-erl-tuples` |
 
 # FFI
 In place of `.js` FFI files, the Erlang backend has `.erl` FFI files. As per the regular compiler since 0.9, these must be placed along the corresponding `.purs` file with the same name.
