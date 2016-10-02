@@ -26,8 +26,10 @@ literals = mkPattern' match
 
   match :: (Emit gen) => Erl -> StateT PrinterState Maybe gen
   match (ENumericLiteral n) = return $ emit $ either show show n
-  match (EStringLiteral s) = return $ emit $ "\"" <> s <> "\""
-  match (ECharLiteral c) = return $ emit ['$',c]
+  match (EStringLiteral s) = return $ emit $ "\"" <> concatMap replaceChar s <> "\""
+    where replaceChar '"' = "\\\""
+          replaceChar c   = escapeChar c
+  match (ECharLiteral c) = return $ emit $ "$" <> escapeChar c
   match (EAtomLiteral a) = return $ emit $ runAtom a
   match (ETupleLiteral es) = do
     es' <- mapM prettyPrintErl' es
@@ -118,8 +120,17 @@ literals = mkPattern' match
 
   match e = traceShow e mzero
 
-
-
+escapeChar :: Char -> String
+escapeChar '\\' = "\\\\"
+escapeChar '\b' = "\\b"
+escapeChar '\f' = "\\f"
+escapeChar '\n' = "\\n"
+escapeChar '\r' = "\\r"
+escapeChar '\t' = "\\t"
+escapeChar '\v' = "\\v"
+escapeChar '\0' = "\\0"
+escapeChar '\a' = "\\7"
+escapeChar c    = [c]
 
 app :: (Emit gen) => Pattern PrinterState Erl (gen, Erl)
 app = mkPattern' match
