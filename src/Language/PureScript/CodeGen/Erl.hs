@@ -31,7 +31,7 @@ import Control.Monad.Supply.Class
 import Control.Monad(when)
 
 import Language.PureScript.CoreFn hiding (moduleExports)
-import Language.PureScript.Errors
+import Language.PureScript.Errors (MultipleErrors, rethrow, addHint, ErrorMessageHint(..), SimpleErrorMessage(..), errorMessage, rethrowWithPosition)
 import Language.PureScript.Options
 import Language.PureScript.Names
 import Language.PureScript.Types

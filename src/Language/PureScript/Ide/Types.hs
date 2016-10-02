@@ -12,101 +12,128 @@
 -- Type definitions for psc-ide
 -----------------------------------------------------------------------------
 
-{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DeriveFoldable    #-}
 
 module Language.PureScript.Ide.Types where
 
-import           Prelude                              ()
-import           Prelude.Compat
+import           Protolude
 
 import           Control.Concurrent.STM
-import           Control.Monad
-import           Control.Monad.Reader.Class
-import           Control.Monad.Trans
 import           Data.Aeson
-import           Data.Map.Lazy                        as M
-import           Data.Maybe                           (maybeToList)
-import           Data.Text                            (Text (), pack, unpack)
-import qualified Language.PureScript.AST.Declarations as D
-import           Language.PureScript.Externs
+import qualified Data.Map.Lazy                        as M
 import qualified Language.PureScript.Errors.JSON      as P
-import qualified Language.PureScript.Names            as N
 import qualified Language.PureScript as P
+import           Language.PureScript.Ide.Conversions
 
-import           Text.Parsec
-import           Text.Parsec.Text
-
-type Ident = Text
-type DeclIdent = Text
 type ModuleIdent = Text
 
-data ExternDecl
-    -- | A function/value declaration
-    = ValueDeclaration Ident P.Type
-    | TypeDeclaration (P.ProperName 'P.TypeName) P.Kind
-    | TypeSynonymDeclaration (P.ProperName 'P.TypeName) P.Type
-    -- | A Dependency onto another Module
-    | Dependency
-        ModuleIdent  -- name of the dependency
-        [Text]       -- explicit imports
-        (Maybe Text) -- An eventual qualifier
-    -- | A module declaration
-    | ModuleDecl
-        ModuleIdent -- The modules name
-        [DeclIdent] -- The exported identifiers
-    -- | A data/newtype declaration
-    | DataConstructor
-      DeclIdent -- The type name
-      (P.ProperName 'P.TypeName)
-      P.Type      -- The "type"
-    -- | An exported module
-    | TypeClassDeclaration (P.ProperName 'P.ClassName)
-    | ValueOperator (P.OpName 'P.ValueOpName) Ident P.Precedence P.Associativity
-    | TypeOperator (P.OpName 'P.TypeOpName) Ident P.Precedence P.Associativity
-    | Export ModuleIdent -- The exported Modules name
-    deriving (Show,Eq,Ord)
+data IdeDeclaration
+  = IdeValue P.Ident P.Type
+  | IdeType (P.ProperName 'P.TypeName) P.Kind
+  | IdeTypeSynonym (P.ProperName 'P.TypeName) P.Type
+  | IdeDataConstructor (P.ProperName 'P.ConstructorName) (P.ProperName 'P.TypeName) P.Type
+  | IdeTypeClass (P.ProperName 'P.ClassName)
+  | IdeValueOperator (P.OpName 'P.ValueOpName) (P.Qualified (Either P.Ident (P.ProperName 'P.ConstructorName))) P.Precedence P.Associativity (Maybe P.Type)
+  | IdeTypeOperator (P.OpName 'P.TypeOpName) (P.Qualified (P.ProperName 'P.TypeName)) P.Precedence P.Associativity (Maybe P.Kind)
+  deriving (Show, Eq, Ord)
 
-type Module = (ModuleIdent, [ExternDecl])
+data IdeDeclarationAnn = IdeDeclarationAnn Annotation IdeDeclaration
+  deriving (Show, Eq, Ord)
+
+data Annotation
+  = Annotation
+  { annLocation     :: Maybe P.SourceSpan
+  , annExportedFrom :: Maybe P.ModuleName
+  , annTypeAnnotation :: Maybe P.Type
+  } deriving (Show, Eq, Ord)
+
+emptyAnn :: Annotation
+emptyAnn = Annotation Nothing Nothing Nothing
+
+type Module = (P.ModuleName, [IdeDeclarationAnn])
+
+type DefinitionSites a = Map (Either Text Text) a
+type TypeAnnotations = Map P.Ident P.Type
+newtype AstData a = AstData (Map P.ModuleName (DefinitionSites a, TypeAnnotations))
+  -- ^ SourceSpans for the definition sites of Values and Types aswell as type
+  -- annotations found in a module
+  deriving (Show, Eq, Ord, Functor, Foldable)
 
 data Configuration =
   Configuration
   { confOutputPath :: FilePath
   , confDebug      :: Bool
+  , confGlobs      :: [FilePath]
   }
 
-data PscIdeEnvironment =
-  PscIdeEnvironment
-  { envStateVar      :: TVar PscIdeState
-  , envConfiguration :: Configuration
+data IdeEnvironment =
+  IdeEnvironment
+  { ideStateVar      :: TVar IdeState
+  , ideConfiguration :: Configuration
   }
 
-type PscIde m = (MonadIO m, MonadReader PscIdeEnvironment m)
+type Ide m = (MonadIO m, MonadReader IdeEnvironment m)
 
-data PscIdeState =
-  PscIdeState
-  { pscIdeStateModules       :: M.Map Text [ExternDecl]
-  , pscIdeStateExternsFiles  :: M.Map P.ModuleName ExternsFile
-  , pscIdeStateCachedRebuild :: Maybe (P.ModuleName, ExternsFile)
-  } deriving Show
+data IdeState = IdeState
+  { ideStage1 :: Stage1
+  , ideStage2 :: Stage2
+  , ideStage3 :: Stage3
+  }
 
-emptyPscIdeState :: PscIdeState
-emptyPscIdeState = PscIdeState M.empty M.empty Nothing
+emptyIdeState :: IdeState
+emptyIdeState = IdeState emptyStage1 emptyStage2 emptyStage3
 
-data Match = Match ModuleIdent ExternDecl
-               deriving (Show, Eq)
+emptyStage1 :: Stage1
+emptyStage1 = Stage1 M.empty M.empty
 
-newtype Completion =
-  Completion (ModuleIdent, DeclIdent, Text)
-  deriving (Show,Eq)
+emptyStage2 :: Stage2
+emptyStage2 = Stage2 (AstData M.empty)
+
+emptyStage3 :: Stage3
+emptyStage3 = Stage3 M.empty Nothing
+
+data Stage1 = Stage1
+  { s1Externs :: M.Map P.ModuleName P.ExternsFile
+  , s1Modules :: M.Map P.ModuleName (P.Module, FilePath)
+  }
+
+data Stage2 = Stage2
+  { s2AstData :: AstData P.SourceSpan
+  }
+
+data Stage3 = Stage3
+  { s3Declarations :: M.Map P.ModuleName [IdeDeclarationAnn]
+  , s3CachedRebuild :: Maybe (P.ModuleName, P.ExternsFile)
+  }
+
+newtype Match a = Match (P.ModuleName, a)
+           deriving (Show, Eq, Functor)
+
+-- | A completion as it gets sent to the editors
+data Completion = Completion
+  { complModule :: Text
+  , complIdentifier :: Text
+  , complType :: Text
+  , complExpandedType :: Text
+  , complLocation :: Maybe P.SourceSpan
+  , complDocumentation :: Maybe Text
+  } deriving (Show, Eq)
 
 instance ToJSON Completion where
-  toJSON (Completion (m,d,t)) =
-    object ["module" .= m, "identifier" .= d, "type" .= t]
+  toJSON (Completion {..}) =
+    object [ "module" .= complModule
+           , "identifier" .= complIdentifier
+           , "type" .= complType
+           , "expandedType" .= complExpandedType
+           , "definedAt" .= complLocation
+           , "documentation" .= complDocumentation
+           ]
 
 data ModuleImport =
   ModuleImport
   { importModuleName :: ModuleIdent
-  , importType       :: D.ImportDeclarationType
+  , importType       :: P.ImportDeclarationType
   , importQualifier  :: Maybe Text
   } deriving(Show)
 
@@ -116,25 +143,25 @@ instance Eq ModuleImport where
     && importQualifier mi1 == importQualifier mi2
 
 instance ToJSON ModuleImport where
-  toJSON (ModuleImport mn D.Implicit qualifier) =
+  toJSON (ModuleImport mn P.Implicit qualifier) =
     object $ [ "module" .= mn
              , "importType" .= ("implicit" :: Text)
-             ] ++ fmap (\x -> "qualifier" .= x) (maybeToList qualifier)
-  toJSON (ModuleImport mn (D.Explicit refs) _) =
-    object [ "module" .= mn
-           , "importType" .= ("explicit" :: Text)
-           , "identifiers" .= (identifierFromDeclarationRef <$> refs)
-           ]
-  toJSON (ModuleImport mn (D.Hiding refs) _) =
-    object [ "module" .= mn
-           , "importType" .= ("hiding" :: Text)
-           , "identifiers" .= (identifierFromDeclarationRef <$> refs)
-           ]
+             ] ++ map (\x -> "qualifier" .= x) (maybeToList qualifier)
+  toJSON (ModuleImport mn (P.Explicit refs) qualifier) =
+    object $ [ "module" .= mn
+             , "importType" .= ("explicit" :: Text)
+             , "identifiers" .= (identifierFromDeclarationRef <$> refs)
+             ] ++ map (\x -> "qualifier" .= x) (maybeToList qualifier)
+  toJSON (ModuleImport mn (P.Hiding refs) qualifier) =
+    object $ [ "module" .= mn
+             , "importType" .= ("hiding" :: Text)
+             , "identifiers" .= (identifierFromDeclarationRef <$> refs)
+             ] ++ map (\x -> "qualifier" .= x) (maybeToList qualifier)
 
-identifierFromDeclarationRef :: D.DeclarationRef -> String
-identifierFromDeclarationRef (D.TypeRef name _) = N.runProperName name
-identifierFromDeclarationRef (D.ValueRef ident) = N.runIdent ident
-identifierFromDeclarationRef (D.TypeClassRef name) = N.runProperName name
+identifierFromDeclarationRef :: P.DeclarationRef -> Text
+identifierFromDeclarationRef (P.TypeRef name _) = runProperNameT name
+identifierFromDeclarationRef (P.ValueRef ident) = runIdentT ident
+identifierFromDeclarationRef (P.TypeClassRef name) = runProperNameT name
 identifierFromDeclarationRef _ = ""
 
 data Success =
@@ -145,7 +172,7 @@ data Success =
   | ImportList [ModuleImport]
   | ModuleList [ModuleIdent]
   | RebuildSuccess [P.JSONError]
-  deriving(Show, Eq)
+  deriving (Show, Eq)
 
 encodeSuccess :: (ToJSON a) => a -> Value
 encodeSuccess res =
@@ -180,58 +207,37 @@ data PursuitResponse =
   -- | A Pursuit Response for a module. Consists of the modules name and the
   -- package it belongs to
   ModuleResponse ModuleIdent Text
-  -- | A Pursuit Response for a declaration. Consist of the declarations type,
-  -- module, name and package
-  | DeclarationResponse Text ModuleIdent DeclIdent Text
+  -- | A Pursuit Response for a declaration. Consist of the declaration's
+  -- module, name, package, type summary text
+  | DeclarationResponse Text ModuleIdent Text (Maybe Text) Text
   deriving (Show,Eq)
 
 instance FromJSON PursuitResponse where
   parseJSON (Object o) = do
     package <- o .: "package"
     info <- o .: "info"
-    (type' :: String) <- info .: "type"
+    (type' :: Text) <- info .: "type"
     case type' of
       "module" -> do
         name <- info .: "module"
         pure (ModuleResponse name package)
       "declaration" -> do
         moduleName <- info .: "module"
-        Right (ident, declType) <- typeParse <$> o .: "text"
-        pure (DeclarationResponse declType moduleName ident package)
+        ident <- info .: "title"
+        (text :: Text) <- o .: "text"
+        typ <- info .:? "typeText"
+        pure (DeclarationResponse moduleName ident package typ text)
       _ -> mzero
   parseJSON _ = mzero
-
-
-typeParse :: Text -> Either Text (Text, Text)
-typeParse t = case parse parseType "" t of
-  Right (x,y) -> Right (pack x, pack y)
-  Left err -> Left (pack (show err))
-  where
-    parseType :: Parser (String, String)
-    parseType = do
-      name <- identifier
-      _ <- string "::"
-      spaces
-      type' <- many1 anyChar
-      pure (unpack name, type')
-
-    identifier :: Parser Text
-    identifier = do
-      spaces
-      ident <-
-        -- necessary for being able to parse the following ((++), concat)
-        between (char '(') (char ')') (many1 (noneOf ", )")) <|>
-        many1 (noneOf ", )")
-      spaces
-      pure (pack ident)
 
 instance ToJSON PursuitResponse where
   toJSON (ModuleResponse name package) =
     object ["module" .= name, "package" .= package]
-  toJSON (DeclarationResponse module' ident type' package) =
+  toJSON (DeclarationResponse module' ident package type' text) =
     object
       [ "module"  .= module'
       , "ident"   .= ident
       , "type"    .= type'
       , "package" .= package
+      , "text"    .= text
       ]

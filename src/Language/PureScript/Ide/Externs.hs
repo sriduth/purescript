@@ -12,29 +12,21 @@
 -- Handles externs files for psc-ide
 -----------------------------------------------------------------------------
 
-{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE FlexibleContexts  #-}
 
 module Language.PureScript.Ide.Externs
-  ( ExternDecl(..),
-    ModuleIdent,
-    DeclIdent,
-    readExternFile,
-    convertExterns,
-    unwrapPositioned,
-    unwrapPositionedRef
+  ( readExternFile
+  , convertExterns
+  , annotateModule
   ) where
 
-import           Prelude                       ()
-import           Prelude.Compat
+import           Protolude
 
-import           Control.Monad.Error.Class
-import           Control.Monad.IO.Class
 import           Data.Aeson                    (decodeStrict)
 import           Data.List                     (nub)
-import           Data.Maybe                    (mapMaybe)
-import           Data.Monoid
-import           Data.Text                     (Text)
-import qualified Data.Text                     as T
+import qualified Data.Map                      as Map
 import qualified Data.ByteString               as BS
 import           Language.PureScript.Ide.Error (PscIdeError (..))
 import           Language.PureScript.Ide.Types
@@ -47,80 +39,94 @@ readExternFile :: (MonadIO m, MonadError PscIdeError m) =>
 readExternFile fp = do
    parseResult <- liftIO (decodeStrict <$> BS.readFile fp)
    case parseResult of
-     Nothing -> throwError . GeneralError $ "Parsing the extern at: " ++ fp ++ " failed"
+     Nothing -> throwError . GeneralError $ "Parsing the extern at: " <> toS fp <> " failed"
      Just externs -> pure externs
 
-moduleNameToText :: P.ModuleName -> Text
-moduleNameToText = T.pack . P.runModuleName
-
-identToText :: P.Ident -> Text
-identToText  = T.pack . P.runIdent
-
-convertExterns :: P.ExternsFile -> Module
-convertExterns ef = (moduleName, exportDecls ++ importDecls ++ decls ++ operatorDecls ++ tyOperatorDecls)
+convertExterns :: P.ExternsFile -> (Module, [(P.ModuleName, P.DeclarationRef)])
+convertExterns ef =
+  ((P.efModuleName ef, decls), exportDecls)
   where
-    moduleName = moduleNameToText (P.efModuleName ef)
-    importDecls = convertImport <$> P.efImports ef
+    decls = map
+      (IdeDeclarationAnn emptyAnn)
+      (cleanDeclarations ++ operatorDecls ++ tyOperatorDecls)
     exportDecls = mapMaybe (convertExport . unwrapPositionedRef) (P.efExports ef)
     operatorDecls = convertOperator <$> P.efFixities ef
     tyOperatorDecls = convertTypeOperator <$> P.efTypeFixities ef
-    otherDecls = mapMaybe convertDecl (P.efDeclarations ef)
+    declarations = mapMaybe convertDecl (P.efDeclarations ef)
 
-    typeClassFilter = foldMap removeTypeDeclarationsForClass (filter isTypeClassDeclaration otherDecls)
-    decls = nub $ appEndo typeClassFilter otherDecls
+    typeClassFilter = foldMap removeTypeDeclarationsForClass (filter isTypeClassDeclaration declarations)
+    cleanDeclarations = nub $ appEndo typeClassFilter declarations
 
-removeTypeDeclarationsForClass :: ExternDecl -> Endo [ExternDecl]
-removeTypeDeclarationsForClass (TypeClassDeclaration n) = Endo (filter notDuplicate)
-  where notDuplicate (TypeDeclaration n' _) = runProperNameT n /= runProperNameT n'
-        notDuplicate (TypeSynonymDeclaration n' _) = runProperNameT n /= runProperNameT n'
+removeTypeDeclarationsForClass :: IdeDeclaration -> Endo [IdeDeclaration]
+removeTypeDeclarationsForClass (IdeTypeClass n) = Endo (filter notDuplicate)
+  where notDuplicate (IdeType n' _) = runProperNameT n /= runProperNameT n'
+        notDuplicate (IdeTypeSynonym n' _) = runProperNameT n /= runProperNameT n'
         notDuplicate _ = True
 removeTypeDeclarationsForClass _ = mempty
 
-isTypeClassDeclaration :: ExternDecl -> Bool
-isTypeClassDeclaration TypeClassDeclaration{} = True
+isTypeClassDeclaration :: IdeDeclaration -> Bool
+isTypeClassDeclaration IdeTypeClass{} = True
 isTypeClassDeclaration _ = False
 
-convertImport :: P.ExternsImport -> ExternDecl
-convertImport ei = Dependency
-  (moduleNameToText (P.eiModule ei))
-  []
-  (moduleNameToText <$> P.eiImportedAs ei)
-
-convertExport :: P.DeclarationRef -> Maybe ExternDecl
-convertExport (P.ModuleRef mn) = Just (Export (moduleNameToText mn))
+convertExport :: P.DeclarationRef -> Maybe (P.ModuleName, P.DeclarationRef)
+convertExport (P.ReExportRef m r) = Just (m, r)
 convertExport _ = Nothing
 
-convertDecl :: P.ExternsDeclaration -> Maybe ExternDecl
-convertDecl P.EDType{..} = Just $ TypeDeclaration edTypeName edTypeKind
-convertDecl P.EDTypeSynonym{..} = Just $
-  TypeSynonymDeclaration edTypeSynonymName edTypeSynonymType
+convertDecl :: P.ExternsDeclaration -> Maybe IdeDeclaration
+convertDecl P.EDType{..} = Just (IdeType edTypeName edTypeKind)
+convertDecl P.EDTypeSynonym{..} =
+  Just (IdeTypeSynonym edTypeSynonymName edTypeSynonymType)
 convertDecl P.EDDataConstructor{..} = Just $
-  DataConstructor (runProperNameT edDataCtorName) edDataCtorTypeCtor edDataCtorType
+  IdeDataConstructor edDataCtorName edDataCtorTypeCtor edDataCtorType
 convertDecl P.EDValue{..} = Just $
-  ValueDeclaration (identToText edValueName) edValueType
-convertDecl P.EDClass{..} = Just $ TypeClassDeclaration edClassName
+  IdeValue edValueName edValueType
+convertDecl P.EDClass{..} = Just (IdeTypeClass edClassName)
 convertDecl P.EDInstance{} = Nothing
 
-convertOperator :: P.ExternsFixity -> ExternDecl
+convertOperator :: P.ExternsFixity -> IdeDeclaration
 convertOperator P.ExternsFixity{..} =
-  ValueOperator
+  IdeValueOperator
     efOperator
-    (T.pack (P.showQualified (either P.runIdent P.runProperName) efAlias))
+    efAlias
     efPrecedence
     efAssociativity
+    Nothing
 
-convertTypeOperator :: P.ExternsTypeFixity -> ExternDecl
+convertTypeOperator :: P.ExternsTypeFixity -> IdeDeclaration
 convertTypeOperator P.ExternsTypeFixity{..} =
-  TypeOperator
+  IdeTypeOperator
     efTypeOperator
-    (T.pack (P.showQualified P.runProperName efTypeAlias))
+    efTypeAlias
     efTypePrecedence
     efTypeAssociativity
+    Nothing
 
-unwrapPositioned :: P.Declaration -> P.Declaration
-unwrapPositioned (P.PositionedDeclaration _ _ x) = x
-unwrapPositioned x = x
-
-unwrapPositionedRef :: P.DeclarationRef -> P.DeclarationRef
-unwrapPositionedRef (P.PositionedDeclarationRef _ _ x) = x
-unwrapPositionedRef x = x
+annotateModule
+  :: (DefinitionSites P.SourceSpan, TypeAnnotations)
+  -> Module
+  -> Module
+annotateModule (defs, types) (moduleName, decls) =
+  (moduleName, map convertDeclaration decls)
+  where
+    convertDeclaration :: IdeDeclarationAnn -> IdeDeclarationAnn
+    convertDeclaration (IdeDeclarationAnn ann d) = case d of
+      IdeValue i t ->
+        annotateFunction i (IdeValue i t)
+      IdeType i k ->
+        annotateType (runProperNameT i) (IdeType i k)
+      IdeTypeSynonym i t ->
+        annotateType (runProperNameT i) (IdeTypeSynonym i t)
+      IdeDataConstructor i tn t ->
+        annotateValue (runProperNameT i) (IdeDataConstructor i tn t)
+      IdeTypeClass i ->
+        annotateType (runProperNameT i) (IdeTypeClass i)
+      IdeValueOperator n i p a t ->
+        annotateValue (valueOperatorAliasT i) (IdeValueOperator n i p a t)
+      IdeTypeOperator n i p a k ->
+        annotateType (typeOperatorAliasT i) (IdeTypeOperator n i p a k)
+      where
+        annotateFunction x = IdeDeclarationAnn (ann { annLocation = Map.lookup (Left (runIdentT x)) defs
+                                                    , annTypeAnnotation = Map.lookup x types
+                                                    })
+        annotateValue x = IdeDeclarationAnn (ann {annLocation = Map.lookup (Left x) defs})
+        annotateType x = IdeDeclarationAnn (ann {annLocation = Map.lookup (Right x) defs})

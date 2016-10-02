@@ -14,27 +14,24 @@ to detect all the compiled modules in your project and load them.
 
 **Params:**
  - `modules :: (optional) [ModuleName]`: A list of modules to load.
-  psc-ide-server will try to parse all the declarations in these modules
- - `dependencies :: (optional) [ModuleName]`: A list of modules to load 
-  including their dependencies. In contrast to the `module` field, all the
-  imports in these Modules will also be loaded.
+ psc-ide-server will try to parse all the declarations in these modules
 
 ```json
 {
   "command": "load",
   "params": (optional) {
-    "modules": (optional)["Module.Name1", "Module.Name2"],
-    "dependencies": (optional)["Module.Name3"]
+    "modules": (optional)["Module.Name1", "Module.Name2"]
   }
 }
 ```
 
 **Result:**
 
-The Load Command returns a string.
+The Load Command returns a string with a summary about the loading process.
 
 ### Type
-The `type` command looks up the type for a given identifier.
+The `type` command looks up the type for a given identifier. It also returns the
+definition position, if it can be found in the passed source files.
 
 **Params:**
  - `search :: String`: The identifier to look for. Only matches on equality.
@@ -71,7 +68,7 @@ The `complete` command looks up possible completions/corrections.
 
   If no matcher is given every candidate, that passes the filters, is returned
   in no particular order.
-  
+
 ```json
 {
   "command": "complete",
@@ -87,18 +84,29 @@ The `complete` command looks up possible completions/corrections.
 
 The following format is returned as the Result:
 
+Both the `definedAt` aswell as the `documentation` field might be `null` if they
+couldn't be extracted from a source file.
+
 ```json
 [
   {
   "module": "Data.Array",
   "identifier": "filter",
-  "type": "forall a. (a -> Boolean) -> Array a -> Array a"
+  "type": "forall a. (a -> Boolean) -> Array a -> Array a",
+  "expandedType": "forall a. (a -> Boolean) -> Array a -> Array a",
+  "definedAt":
+    {
+    "name": "/path/to/file",
+    "start": [1, 3],
+    "end": [3, 1]
+    },
+  "documentation": "A filtering function"
   }
 ]
 ```
 
 
-### CaseSplit 
+### CaseSplit
 
 The CaseSplit command takes a line of source code, an area in that line of code
 and replaces it with all patterns for a given type. The parameter `annotations`
@@ -242,9 +250,9 @@ Example:
     "importCommand": {
       "importCommand": "addImport",
       "identifier": "bind"
-    } 
+    }
   }
-} 
+}
 ```
 
 ### Rebuild
@@ -373,7 +381,7 @@ The list commmand can also list the imports for a given file.
 
 The list import command returns a list of imports where imports are of the following form:
 
-Implicit Import(`import Data.Array`):
+Implicit Import (`import Data.Array`):
 ```json
 [
   {
@@ -383,7 +391,7 @@ Implicit Import(`import Data.Array`):
 ]
 ```
 
-Implicit qualified Import(`import qualified Data.Array as A`):
+Implicit qualified Import (`import Data.Array as A`):
 ```json
 [
   {
@@ -394,7 +402,7 @@ Implicit qualified Import(`import qualified Data.Array as A`):
 ]
 ```
 
-Explicit Import(`import Data.Array (filter, filterM, join)`):
+Explicit Import (`import Data.Array (filter, filterM, join)`):
 ```json
 [
   {
@@ -405,7 +413,19 @@ Explicit Import(`import Data.Array (filter, filterM, join)`):
 ]
 ```
 
-Hiding Import(`import Data.Array hiding (filter, filterM, join)`):
+Explicit qualified Import (`import Data.Array (filter, filterM, join) as A`):
+```json
+[
+  {
+  "module": "Data.Array",
+  "importType": "explicit",
+  "identifiers": ["filter", "filterM", "join"],
+  "qualifier": "A"
+  }
+]
+```
+
+Hiding Import (`import Data.Array hiding (filter, filterM, join)`):
 ```json
 [
   {
@@ -415,6 +435,19 @@ Hiding Import(`import Data.Array hiding (filter, filterM, join)`):
   }
 ]
 ```
+
+Qualified Hiding Import (`import Data.Array hiding (filter, filterM, join) as A`):
+```json
+[
+  {
+  "module": "Data.Array",
+  "importType": "hiding",
+  "identifiers": ["filter", "filterM", "join"],
+  "qualifier": "A"
+  }
+]
+```
+
 ### Cwd/Quit/Reset
 `cwd` returns the working directory of the server(should be your project root).
 

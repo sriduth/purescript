@@ -175,6 +175,7 @@ options = P.Options <$> pure False
                     <*> verboseErrors
                     <*> (not <$> comments)
                     <*> pure False
+                    <*> pure False
 
 pscMakeOptions :: Parser PSCMakeOptions
 pscMakeOptions = PSCMakeOptions <$> many inputFile

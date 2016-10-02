@@ -1,5 +1,5 @@
 name: purescript
-version: 0.9.1
+version: 0.10.0
 cabal-version: >=1.8
 build-type: Simple
 license: MIT
@@ -60,6 +60,7 @@ extra-source-files: examples/passing/*.purs
                   , examples/failing/ConflictingImports2/*.purs
                   , examples/failing/ConflictingQualifiedImports/*.purs
                   , examples/failing/ConflictingQualifiedImports2/*.purs
+                  , examples/failing/DuplicateModule/*.purs
                   , examples/failing/ExportConflictClass/*.purs
                   , examples/failing/ExportConflictCtor/*.purs
                   , examples/failing/ExportConflictType/*.purs
@@ -76,9 +77,12 @@ extra-source-files: examples/passing/*.purs
                   , examples/failing/OrphanInstance/*.purs
                   , examples/warning/*.purs
                   , examples/warning/*.js
+                  , examples/warning/UnusedExplicitImportTypeOp/*.purs
                   , examples/docs/bower_components/purescript-prelude/src/*.purs
                   , examples/docs/bower.json
                   , examples/docs/src/*.purs
+                  , psci/static/index.html
+                  , psci/static/index.js
                   , tests/support/package.json
                   , tests/support/bower.json
                   , tests/support/setup-win.cmd
@@ -98,7 +102,7 @@ source-repository head
 
 library
     build-depends: base >=4.8 && <5,
-                   aeson >= 0.8 && < 0.12,
+                   aeson >= 0.8 && < 1.1,
                    aeson-better-errors >= 0.8,
                    ansi-terminal >= 0.6.2 && < 0.7,
                    base-compat >=0.6.0,
@@ -106,6 +110,8 @@ library
                    boxes >= 0.1.4 && < 0.2.0,
                    bytestring -any,
                    containers -any,
+                   clock -any,
+                   data-ordlist >= 0.4.7.0,
                    directory >= 1.2,
                    dlist -any,
                    edit-distance -any,
@@ -113,6 +119,7 @@ library
                    fsnotify >= 0.2.1,
                    Glob >= 0.7 && < 0.8,
                    haskeline >= 0.7.0.0,
+                   http-client >= 0.4.30 && <0.6,
                    http-types -any,
                    language-javascript == 0.6.*,
                    lifted-base >= 0.2.3 && < 0.2.4,
@@ -125,6 +132,7 @@ library
                    pipes >= 4.0.0 && < 4.3.0,
                    pipes-http -any,
                    process >= 1.2.0 && < 1.5,
+                   protolude >= 0.1.6,
                    regex-tdfa -any,
                    safe >= 0.3.9 && < 0.4,
                    semigroups >= 0.16.2 && < 0.19,
@@ -177,6 +185,7 @@ library
                      Language.PureScript.CoreFn.Meta
                      Language.PureScript.CoreFn.Module
                      Language.PureScript.CoreFn.Traversals
+                     Language.PureScript.CoreFn.ToJSON
                      Language.PureScript.Comments
                      Language.PureScript.Environment
                      Language.PureScript.Errors
@@ -256,22 +265,23 @@ library
                      Language.PureScript.Publish.BoxesHelpers
 
                      Language.PureScript.Ide
+                     Language.PureScript.Ide.CaseSplit
                      Language.PureScript.Ide.Command
+                     Language.PureScript.Ide.Completion
+                     Language.PureScript.Ide.Conversions
                      Language.PureScript.Ide.Externs
                      Language.PureScript.Ide.Error
-                     Language.PureScript.Ide.Pursuit
-                     Language.PureScript.Ide.Completion
-                     Language.PureScript.Ide.Matcher
-                     Language.PureScript.Ide.Filter
-                     Language.PureScript.Ide.Types
-                     Language.PureScript.Ide.State
-                     Language.PureScript.Ide.CaseSplit
-                     Language.PureScript.Ide.SourceFile
-                     Language.PureScript.Ide.Watcher
-                     Language.PureScript.Ide.Reexports
                      Language.PureScript.Ide.Imports
-                     Language.PureScript.Ide.Util
+                     Language.PureScript.Ide.Filter
+                     Language.PureScript.Ide.Matcher
+                     Language.PureScript.Ide.Pursuit
                      Language.PureScript.Ide.Rebuild
+                     Language.PureScript.Ide.Reexports
+                     Language.PureScript.Ide.SourceFile
+                     Language.PureScript.Ide.State
+                     Language.PureScript.Ide.Types
+                     Language.PureScript.Ide.Util
+                     Language.PureScript.Ide.Watcher
 
                      Language.PureScript.Interactive
                      Language.PureScript.Interactive.Types
@@ -314,7 +324,7 @@ library
 executable psc
     build-depends: base >=4 && <5,
                    purescript -any,
-                   aeson >= 0.8 && < 0.12,
+                   aeson >= 0.8 && < 1.1,
                    ansi-terminal >= 0.6.2 && < 0.7,
                    base-compat >=0.6.0,
                    bytestring -any,
@@ -340,7 +350,7 @@ executable pserlc
                    containers -any, directory -any, filepath -any,
                    mtl -any, optparse-applicative >= 0.12.1, parsec -any, purescript -any,
                    time -any, transformers -any, transformers-compat -any, Glob >= 0.7 && < 0.8,
-                   aeson >= 0.8 && < 0.12, bytestring -any, utf8-string >= 1 && < 2,
+                   aeson >= 0.8 && < 1.1, bytestring -any, utf8-string >= 1 && < 2,
 
                    ansi-terminal >= 0.6.2 && < 0.7,
                    transformers-base >= 0.4.0 && < 0.5, lifted-base >= 0.2.3 && < 0.2.4, monad-control >= 1.0.0.0 && < 1.1
@@ -355,18 +365,27 @@ executable psci
                    purescript -any,
                    base-compat >=0.6.0,
                    boxes >= 0.1.4 && < 0.2.0,
+                   bytestring -any,
                    containers -any,
                    directory -any,
                    filepath -any,
+                   file-embed -any,
                    Glob -any,
                    haskeline >= 0.7.0.0,
+                   http-types == 0.9.*,
                    mtl -any,
                    optparse-applicative >= 0.12.1,
                    parsec -any,
                    process -any,
+                   stm >= 0.2.4.0,
+                   text -any,
                    time -any,
                    transformers -any,
-                   transformers-compat -any
+                   transformers-compat -any,
+                   wai == 3.*,
+                   wai-websockets == 3.*,
+                   warp == 3.*,
+                   websockets >= 0.9 && <0.10
     main-is: Main.hs
     buildable: True
     hs-source-dirs: psci
@@ -445,6 +464,8 @@ executable psc-ide-server
   other-modules:       Paths_purescript
   other-extensions:
   build-depends:       base >=4 && <5,
+                       aeson >= 0.8 && < 1.1,
+                       bytestring -any,
                        purescript -any,
                        base-compat >=0.6.0,
                        directory -any,
@@ -453,6 +474,7 @@ executable psc-ide-server
                        mtl -any,
                        network -any,
                        optparse-applicative >= 0.12.1,
+                       protolude >= 0.1.6,
                        stm -any,
                        text -any,
                        transformers -any,
@@ -466,6 +488,7 @@ executable psc-ide-client
   other-extensions:
   build-depends:       base >=4 && <5,
                        base-compat >=0.6.0,
+                       bytestring -any,
                        mtl -any,
                        network -any,
                        optparse-applicative >= 0.12.1,
@@ -493,6 +516,7 @@ test-suite tests
                    optparse-applicative -any,
                    parsec -any,
                    process -any,
+                   protolude >= 0.1.6,
                    silently -any,
                    stm -any,
                    text -any,
@@ -518,6 +542,8 @@ test-suite tests
                    Language.PureScript.Ide.MatcherSpec
                    Language.PureScript.Ide.RebuildSpec
                    Language.PureScript.Ide.ReexportsSpec
-                   Language.PureScript.IdeSpec
+                   Language.PureScript.Ide.SourceFile.IntegrationSpec
+                   Language.PureScript.Ide.SourceFileSpec
+                   Language.PureScript.Ide.StateSpec
     buildable: True
     hs-source-dirs: tests

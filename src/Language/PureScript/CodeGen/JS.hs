@@ -15,7 +15,7 @@ import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.Reader (MonadReader, asks)
 import Control.Monad.Supply.Class
 
-import Data.List ((\\), delete, intersect)
+import Data.List ((\\), delete, intersect, nub)
 import Data.Maybe (isNothing, fromMaybe)
 import qualified Data.Foldable as F
 import qualified Data.Map as M
@@ -27,7 +27,9 @@ import Language.PureScript.CodeGen.JS.Common as Common
 import Language.PureScript.CodeGen.JS.Optimizer
 import Language.PureScript.CoreFn
 import Language.PureScript.Crash
-import Language.PureScript.Errors
+import Language.PureScript.Errors (ErrorMessageHint(..), SimpleErrorMessage(..),
+                                   MultipleErrors(..), rethrow,
+                                   errorMessage, rethrowWithPosition, addHint)
 import Language.PureScript.Names
 import Language.PureScript.Options
 import Language.PureScript.Traversals (sndM)
@@ -49,7 +51,7 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
   rethrow (addHint (ErrorInModule mn)) $ do
     let usedNames = concatMap getNames decls
     let mnLookup = renameImports usedNames imps
-    jsImports <- T.traverse (importToJs mnLookup) . delete (ModuleName [ProperName C.prim]) . (\\ [mn]) $ map snd imps
+    jsImports <- T.traverse (importToJs mnLookup) . delete (ModuleName [ProperName C.prim]) . (\\ [mn]) $ nub $ map snd imps
     let decls' = renameModules mnLookup decls
     jsDecls <- mapM bindToJs decls'
     optimized <- T.traverse (T.traverse optimize) jsDecls
@@ -87,7 +89,7 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
       in if mn' /= mn && mni `elem` used
          then let newName = freshModuleName 1 mn' used
               in go (M.insert mn' (ann, newName) acc) (Ident (runModuleName newName) : used) mns'
-         else go (M.insert mn' (ann, mn') acc) (mni : used) mns'
+         else go (M.insert mn' (ann, mn') acc) used mns'
     go acc _ [] = acc
 
     freshModuleName :: Integer -> ModuleName -> [Ident] -> ModuleName
@@ -280,15 +282,18 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
   extendObj obj sts = do
     newObj <- freshName
     key <- freshName
+    evaluatedObj <- freshName
     let
       jsKey = JSVar Nothing key
       jsNewObj = JSVar Nothing newObj
-      block = JSBlock Nothing (objAssign:copy:extend ++ [JSReturn Nothing jsNewObj])
+      jsEvaluatedObj = JSVar Nothing evaluatedObj
+      block = JSBlock Nothing (evaluate:objAssign:copy:extend ++ [JSReturn Nothing jsNewObj])
+      evaluate = JSVariableIntroduction Nothing evaluatedObj (Just obj)
       objAssign = JSVariableIntroduction Nothing newObj (Just $ JSObjectLiteral Nothing [])
-      copy = JSForIn Nothing key obj $ JSBlock Nothing [JSIfElse Nothing cond assign Nothing]
-      cond = JSApp Nothing (JSAccessor Nothing "hasOwnProperty" obj) [jsKey]
-      assign = JSBlock Nothing [JSAssignment Nothing (JSIndexer Nothing jsKey jsNewObj) (JSIndexer Nothing jsKey obj)]
-      stToAssign (s, js) = JSAssignment Nothing (JSAccessor Nothing s jsNewObj) js
+      copy = JSForIn Nothing key jsEvaluatedObj $ JSBlock Nothing [JSIfElse Nothing cond assign Nothing]
+      cond = JSApp Nothing (JSAccessor Nothing "hasOwnProperty" jsEvaluatedObj) [jsKey]
+      assign = JSBlock Nothing [JSAssignment Nothing (JSIndexer Nothing jsKey jsNewObj) (JSIndexer Nothing jsKey jsEvaluatedObj)]
+      stToAssign (s, js) = JSAssignment Nothing (accessorString s jsNewObj) js
       extend = map stToAssign sts
     return $ JSApp Nothing (JSFunction Nothing Nothing [] block) []
 
@@ -362,7 +367,7 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
   -- binder.
   --
   binderToJs' :: String -> [JS] -> Binder Ann -> m [JS]
-  binderToJs' _ done (NullBinder{}) = return done
+  binderToJs' _ done NullBinder{} = return done
   binderToJs' varName done (LiteralBinder _ l) =
     literalToBinderJS varName done l
   binderToJs' varName done (VarBinder _ ident) =

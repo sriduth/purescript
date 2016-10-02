@@ -4,7 +4,6 @@
 module Language.PureScript.CodeGen.JS.Optimizer.Inliner
   ( inlineVariables
   , inlineCommonValues
-  , inlineOperator
   , inlineCommonOperators
   , inlineFnComposition
   , etaConvert
@@ -100,13 +99,13 @@ inlineCommonValues = everywhereOnJS convert
   fnSubtract = (C.dataRing, C.sub)
   intOp ss op x y = JSBinary ss BitwiseOr (JSBinary ss op x y) (JSNumericLiteral ss (Left 0))
 
-inlineOperator :: (String, String) -> (JS -> JS -> JS) -> JS -> JS
-inlineOperator (m, op) f = everywhereOnJS convert
+inlineNonClassFunction :: (String, String) -> (JS -> JS -> JS) -> JS -> JS
+inlineNonClassFunction (m, op) f = everywhereOnJS convert
   where
   convert :: JS -> JS
   convert (JSApp _ (JSApp _ op' [x]) [y]) | isOp op' = f x y
   convert other = other
-  isOp (JSIndexer _ (JSStringLiteral _ op') (JSVar _ m')) = m == m' && op == op'
+  isOp (JSAccessor _ op' (JSVar _ m')) = m == m' && op == op'
   isOp _ = False
 
 inlineCommonOperators :: JS -> JS
@@ -167,6 +166,10 @@ inlineCommonOperators = applyAll $
   , binary' C.dataIntBits C.shr ShiftRight
   , binary' C.dataIntBits C.zshr ZeroFillShiftRight
   , unary'  C.dataIntBits C.complement BitwiseNot
+
+  , inlineNonClassFunction (C.dataFunction, C.apply) $ \f x -> JSApp Nothing f [x]
+  , inlineNonClassFunction (C.dataFunction, C.applyFlipped) $ \x f -> JSApp Nothing f [x]
+  , inlineNonClassFunction (C.dataArrayUnsafe, C.unsafeIndex) $ flip (JSIndexer Nothing)
   ] ++
   [ fn | i <- [0..10], fn <- [ mkFn i, runFn i ] ]
   where
@@ -216,7 +219,7 @@ inlineCommonOperators = applyAll $
 
   isNFn :: String -> Int -> JS -> Bool
   isNFn prefix n (JSVar _ name) = name == (prefix ++ show n)
-  isNFn prefix n (JSAccessor _ name (JSVar _ dataFunction)) | dataFunction == C.dataFunction = name == (prefix ++ show n)
+  isNFn prefix n (JSAccessor _ name (JSVar _ dataFunctionUncurried)) | dataFunctionUncurried == C.dataFunctionUncurried = name == (prefix ++ show n)
   isNFn _ _ _ = False
 
   runFn :: Int -> JS -> JS
