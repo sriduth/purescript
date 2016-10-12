@@ -5,9 +5,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeFamilies #-}
 
-
 module Make where
-
 
 import Prelude ()
 import Prelude.Compat
@@ -19,8 +17,7 @@ import Control.Monad.Trans.Class (MonadTrans(..))
 import Control.Monad.IO.Class
 import Control.Monad.Supply
 
-
-import Data.List (foldl', sort, intercalate)
+import Data.List (intercalate)
 import Data.Maybe (fromMaybe)
 import Data.Time.Clock
 import Data.String (fromString)
@@ -29,8 +26,6 @@ import Data.Version (showVersion)
 import qualified Data.Map as M
 
 import Data.Char (toLower)
-import Data.List (intercalate)
-
 
 import System.Directory
        (doesFileExist, getModificationTime, createDirectoryIfMissing)
@@ -52,8 +47,6 @@ import Language.PureScript.Parser.Erl
 import Paths_purescript as Paths
 
 import Language.PureScript.CoreFn as CF
-
-import Debug.Trace
 
 -- |
 -- A set of make actions that read and write modules from the given directory.

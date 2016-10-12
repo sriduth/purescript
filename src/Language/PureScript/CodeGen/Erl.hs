@@ -15,37 +15,25 @@ import Language.PureScript.CodeGen.Erl.AST as AST
 
 import Data.Traversable
 import Data.Foldable
-import Data.List (intercalate, nub, find)
-import Data.Maybe (mapMaybe, maybeToList, catMaybes, fromMaybe)
+import Data.List (intercalate, nub)
+import Data.Maybe (fromMaybe)
 import Control.Monad.Error.Class (MonadError(..))
 
 import Control.Arrow (first)
-import Control.Monad.Reader (MonadReader(..), ReaderT(..), asks)
-import Control.Monad.Supply
-import Control.Monad.Trans.Class (MonadTrans(..))
-import Control.Monad.Trans.Control (MonadBaseControl(..))
-import Control.Monad.Trans.Except
-import Control.Monad.Writer.Class (MonadWriter(..))
+import Control.Monad.Reader (MonadReader(..))
 
 import Control.Monad.Supply.Class
-import Control.Monad(when)
 
 import Language.PureScript.CoreFn hiding (moduleExports)
 import Language.PureScript.Errors (MultipleErrors, rethrow, addHint, ErrorMessageHint(..), SimpleErrorMessage(..), errorMessage, rethrowWithPosition)
 import Language.PureScript.Options
 import Language.PureScript.Names
 import Language.PureScript.Types
-import Language.PureScript.AST (SourceSpan)
 import Language.PureScript.Environment as E
 import qualified Language.PureScript.Constants as C
 import Language.PureScript.Traversals (sndM)
 
 import Language.PureScript.CodeGen.Erl.Common
-
-import Data.Char (toLower, toUpper, isUpper)
-
-import Debug.Trace
-
 
 freshNameErl :: (MonadSupply m) => m String
 freshNameErl = fmap (("_@" ++) . show) fresh
@@ -55,44 +43,26 @@ moduleExports :: forall m .
   => Module Ann
   -> [(String, Int)]
   -> m String
-moduleExports (Module coms mn imps exps foreigns decls) foreignExports  = do
+moduleExports (Module _ _ _ exps _ _) _ = do
   -- TODO nub temporary
-  let exps' = nub $ map (\a -> (++ "/0") $ runAtom $ Atom Nothing $ runIdent a) exps
+  let exps' = nub $ map ((++ "/0") . runAtom . Atom Nothing . runIdent) exps
   -- traceM $ "Exports: " ++ show exps
   -- traceM $ "Exports/2: " ++ show dctorExports
   pure $ "-export([" ++ intercalate ", " exps' ++ "])."
 
   where
     -- TODO must export actual dctor fn
-    upperIdent (Ident (h:_)) = isUpper h
-    upperIdent _ = False
-    dctorExports = concatMap topExports decls
 
-    topExports :: Bind Ann -> [Atom]
-    topExports (NonRec ann ident val) = maybeToList $ topExports' ann ident val
-    topExports (Rec vals) = mapMaybe (uncurry . uncurry $ topExports') vals
-
-    topExports' ::  Ann -> Ident -> Expr Ann -> Maybe Atom
-    topExports' _ ident val =
-      let (_, _, _, meta') = extractAnn val
-      in case (meta', val) of
-        (Just IsTypeClassConstructor, _) -> Just $ identToTypeclassCtor ident
-        (_, Constructor _ _ (ProperName ctor) _) ->
-          Just $ Atom Nothing (runIdent ident)
-        _ -> Nothing
-
+identToTypeclassCtor :: Ident -> Atom
 identToTypeclassCtor a = Atom Nothing (runIdent a)
-identToDataCtor a = Atom Nothing (runIdent a)
 
+qualifiedToTypeclassCtor :: Qualified Ident -> Atom
 qualifiedToTypeclassCtor (Qualified (Just mn) ident) = Atom (Just $ atomModuleName mn) (runIdent ident)
 qualifiedToTypeclassCtor (Qualified  Nothing ident) = Atom Nothing (runIdent ident)
 
-
-
+isTopLevelBinding :: Qualified t -> Bool
 isTopLevelBinding (Qualified (Just _) _) = True
 isTopLevelBinding (Qualified Nothing _) = False
-
-
 
 -- |
 -- Generate code in the simplified Erlang intermediate representation for all declarations in a
@@ -110,23 +80,13 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
     return $ map reExportForeign foreigns ++ concat erlDecls
   where
 
--- foldl (\fn a -> EApp fn [a])) args'
-
   reExportForeign :: (Ident, Type) -> Erl
-  reExportForeign (ident, ty) = --    | isFnTy ty =
+  reExportForeign (ident, _) = --    | isFnTy ty =
       let arity = exportArity ident
           args = map (\m -> "X" ++ show m) [ 1..arity ]
           body = EApp (EAtomLiteral $ qualifiedToErl' mn True ident) (map EVar args)
           fun = foldr (\x fun' -> EFun Nothing x fun') body args
       in EFunctionDef (Atom Nothing $ identToAtomName ident) [] fun
-
-      -- foldl (\fn a -> EApp fn [a])) args'
-
-            -- EFunctionDef (Atom Nothing $ identToAtomName ident) ["X"] $ EApp (EAtomLiteral $ qualifiedToErl' mn True ident) [EVar "X"]
-        -- EFunctionDef (Atom Nothing $ identToAtomName ident) [] $
-        --   EFun Nothing "X" $ EApp (EAtomLiteral $ qualifiedToErl' mn True ident) [EVar "X"]
-    -- | otherwise =
-    --     EFunctionDef (Atom Nothing $ identToAtomName ident) [] $ EApp (EAtomLiteral $ qualifiedToErl' mn True ident) []
 
   exportArity :: Ident -> Int
   exportArity ident = fromMaybe 0 $ findExport $ runIdent ident
@@ -171,15 +131,7 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
   qualifiedToErl (Qualified (Just mn') ident) | mn == mn' = Atom Nothing (runIdent ident)
   qualifiedToErl (Qualified (Just mn') ident) = qualifiedToErl' mn' False ident
 
-  -- Top level definitions are everywhere fully qualified, variables are not.
-  qualifiedProperNameToErl (Qualified (Just mn') pn) | mn == mn' = Atom Nothing (runProperName pn)
-  qualifiedProperNameToErl (Qualified (Just mn') pn) =
-    Atom (Just $ atomModuleName mn') (runProperName pn)
-
   qualifiedToVar (Qualified _ ident) = identToVar ident
-
-  isFnTy :: Type -> Bool
-  isFnTy = (>0) . tyArity
 
   tyArity :: Type -> Int
   tyArity (TypeApp (TypeApp fn _) ty) | fn == E.tyFunction = 1 + tyArity ty
@@ -193,17 +145,6 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
   valueToErl' :: Maybe Ident -> Expr Ann -> m Erl
   valueToErl' _ (Literal (pos, _, _, _) l) =
     maybe id rethrowWithPosition pos $ literalToValueErl l
-
-  -- valueToErl' _ (Var v@(_, _, Just ty, Just IsForeign) (Qualified (Just mn') ident)) | not (isFnTy ty) && mn == mn' =
-  --   return $  EApp (EAtomLiteral $ qualifiedToErl' mn' True ident) []
-  -- valueToErl' _ (Var v@(_, _, _, Just IsForeign) (Qualified (Just mn') ident)) | mn == mn' =
-  --   return $ EFunRef (qualifiedToErl' mn' True ident) 1
-  -- valueToErl' _ (Var v@(_, _, fnty, Just IsForeign) (Qualified (Just mn') ident)) = do
-  --   traceM $ "Foreign other-module: " ++ runModuleName mn ++ " / " ++ runModuleName mn' ++ " - fnty: " ++ show fnty
-  --   return $ EApp (EAtomLiteral $ qualifiedToErl' mn' False ident) []
-  -- valueToErl' _ (Var (_, _, _, Just IsForeign) ident) =
-  --   error $ "Encountered an unqualified reference to a foreign ident " ++ showQualified showIdent ident
-
   valueToErl' _ (Var _ (Qualified (Just (ModuleName [ProperName prim])) (Ident undef))) | prim == C.prim, undef == C.undefined =
     return $ EAtomLiteral $ Atom Nothing C.undefined
   valueToErl' _ (Var _ ident) | isTopLevelBinding ident = return $ EApp (EAtomLiteral $ qualifiedToErl ident) []
@@ -250,7 +191,6 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
     ret <- valueToErl val
     return $ EBlock (ds' ++ [ret])
 
-
   valueToErl' _ (Constructor (_, _, _, Just IsNewtype) _ _ _) = error "newtype ctor"
   valueToErl' _ (Constructor _ _ (ProperName ctor) fields) =
     let createFn =
@@ -258,10 +198,7 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
           in foldr (\f inner -> EFun Nothing (identToVar f) inner) body fields
     in pure createFn
 
-  valueToErl' _ x = error $ "Error: " ++ show x
-
   constructorLiteral name args = ETupleLiteral (EAtomLiteral (Atom Nothing (toAtomName name)) : args)
-
 
   literalToValueErl :: Literal (Expr Ann) -> m Erl
   literalToValueErl = literalToValueErl' EMapLiteral valueToErl
@@ -276,7 +213,7 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
     pure $ EApp (EAtomLiteral $ Atom (Just "array") "from_list") [array]
   literalToValueErl' mapLiteral f (ObjectLiteral ps) = do
     pairs <- mapM (sndM f) ps
-    pure $ mapLiteral $ map (\(a,e) -> (Atom Nothing a, e)) pairs
+    pure $ mapLiteral $ map (first (Atom Nothing)) pairs
 
   boolToAtom :: Bool -> Erl
   boolToAtom True = EAtomLiteral $ Atom Nothing "true"
@@ -311,15 +248,12 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
               e' <- valueToErl e
               pure ([EVarBind var cas], (EFunBinder bs (Just $ Guard $ EVar var), e'))
 
-    err = EAtomLiteral $ Atom Nothing "compiler_error"
-
   binderToErl' :: Binder Ann -> m Erl
   binderToErl' (NullBinder _) = pure $ EVar "_"
   binderToErl' (VarBinder _ ident) = pure $ EVar $ identToVar ident
-  binderToErl' (LiteralBinder _ lit) = (literalToValueErl' EMapPattern binderToErl') lit
+  binderToErl' (LiteralBinder _ lit) = literalToValueErl' EMapPattern binderToErl' lit
   binderToErl' (ConstructorBinder (_, _, _, Just IsNewtype) _ _ [b]) = binderToErl' b
   binderToErl' (ConstructorBinder _ _ (Qualified _ (ProperName ctorName)) binders) = do
     args' <- mapM binderToErl' binders
     pure $ constructorLiteral ctorName args'
   binderToErl' (NamedBinder _ ident binder) = EVarBind (identToVar ident) <$> binderToErl' binder
-  binderToErl' b = error $ "Unhandled binder: " ++ show b

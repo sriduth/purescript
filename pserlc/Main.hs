@@ -13,10 +13,8 @@ import Data.Bool (bool)
 
 import Control.Applicative
 import Control.Monad
-import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.Writer.Strict
 
-import Data.List (isSuffixOf, partition)
 import Data.Version (showVersion)
 import qualified Data.Map as M
 import qualified Data.Aeson as A
@@ -33,18 +31,9 @@ import System.FilePath.Glob (glob)
 import qualified Language.PureScript as P
 import qualified Paths_purescript as Paths
 
-
-import qualified Text.Parsec as PS
-
 import Language.PureScript.Make hiding (buildMakeActions)
 
-import Language.PureScript.Parser.Common
-import Language.PureScript.Parser.Lexer
 import Make(buildMakeActions)
-
-
-import Data.Function (on)
-import Data.List (sortBy, groupBy)
 
 import Language.PureScript.Errors.JSON hiding (moduleName)
 

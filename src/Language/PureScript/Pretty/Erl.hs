@@ -1,4 +1,3 @@
-
 module Language.PureScript.Pretty.Erl where
 
 import Prelude ()
@@ -18,7 +17,6 @@ import Data.Monoid
 
 import Debug.Trace
 import Data.Maybe (fromMaybe)
-
 
 literals :: (Emit gen) => Pattern PrinterState Erl gen
 literals = mkPattern' match

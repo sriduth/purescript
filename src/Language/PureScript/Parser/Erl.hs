@@ -4,10 +4,7 @@ import Prelude.Compat
 
 import qualified Text.Parsec as P
 import Text.Parsec ( (<|>) )
-import qualified Text.Parsec.Token as PT
 import qualified Text.Parsec.Char as PC
-import Data.Functor.Identity
-
 
 parseFile :: P.SourceName -> String -> Either P.ParseError [(String, Int)]
 parseFile = P.parse parseLines
@@ -19,7 +16,7 @@ parseLines = do
   pure (concat lns)
 
 parseLine :: P.Parsec String u [(String, Int)]
-parseLine = (P.try parseAttribute) <|>
+parseLine = P.try parseAttribute <|>
   do
     P.skipMany (PC.noneOf ['\n', '\r'])
     _ <- P.endOfLine
@@ -28,7 +25,7 @@ parseLine = (P.try parseAttribute) <|>
 parseAttribute :: P.Parsec String u [(String, Int)]
 parseAttribute = attributeParser "export"
   (P.between (PC.char '[') (PC.char ']')
-    (atomArityParser `P.sepBy` (PC.char ',')))
+    (atomArityParser `P.sepBy` PC.char ','))
 
 -- P.Parsec String u Token
 --
