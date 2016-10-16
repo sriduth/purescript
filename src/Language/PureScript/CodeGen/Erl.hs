@@ -33,7 +33,10 @@ import Language.PureScript.Environment as E
 import qualified Language.PureScript.Constants as C
 import Language.PureScript.Traversals (sndM)
 
+import qualified Data.Traversable as T
+
 import Language.PureScript.CodeGen.Erl.Common
+import Language.PureScript.CodeGen.Erl.Optimizer
 
 freshNameErl :: (MonadSupply m) => m String
 freshNameErl = fmap (("_@" ++) . show) fresh
@@ -76,8 +79,9 @@ moduleToErl :: forall m .
 moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
   rethrow (addHint (ErrorInModule mn)) $ do
     erlDecls <- mapM topBindToErl decls
+    optimized <- T.traverse (T.traverse optimize) erlDecls
     traverse_ checkExport foreigns
-    return $ map reExportForeign foreigns ++ concat erlDecls
+    return $ map reExportForeign foreigns ++ concat optimized
   where
 
   reExportForeign :: (Ident, Type) -> Erl
@@ -182,7 +186,7 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
   valueToErl' _ (Case _ values binders) = do
     vals <- mapM valueToErl values
     (exprs, binders') <- bindersToErl vals binders
-    let ret = EApp (EFunFull binders') vals
+    let ret = EApp (EFunFull Nothing binders') vals
     pure $ case exprs of
       [] -> ret
       _ -> EBlock (exprs ++ [ret])
@@ -242,7 +246,8 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
             guard bs (ge, e) = do
               var <- freshNameErl
               ge' <- valueToErl ge
-              let fun = EFunFull [(EFunBinder bs Nothing, ge'),
+              let fun = EFunFull Nothing
+                                  [(EFunBinder bs Nothing, ge'),
                                   (EFunBinder (replicate (length bs) (EVar "_")) Nothing, boolToAtom False)]
                   cas = EApp fun vals
               e' <- valueToErl e

@@ -1,3 +1,5 @@
+{-# LANGUAGE ScopedTypeVariables #-}
+
 -- |
 -- Data types for the intermediate simplified-Erlang AST
 --
@@ -5,6 +7,9 @@ module Language.PureScript.CodeGen.Erl.AST where
 
 import Prelude ()
 import Prelude.Compat
+
+import Control.Monad.Identity
+import Control.Arrow (second)
 
 -- -- |
 -- -- Data type for simplified Javascript expressions
@@ -61,7 +66,7 @@ data Erl
   --
   | EFun (Maybe String) String Erl
 
-  | EFunFull [(EFunBinder, Erl)]
+  | EFunFull (Maybe String) [(EFunBinder, Erl)]
 
   -- |
   -- Function application
@@ -108,108 +113,6 @@ data EBinder
 data Guard
   = Guard Erl
   deriving (Show, Read, Eq)
-  -- -- |
-  -- -- A boolean literal
-  -- --
-  -- | JSBooleanLiteral (Maybe SourceSpan) Bool
-
---   -- |
---   -- An array literal
---   --
---   | JSArrayLiteral (Maybe SourceSpan) [JS]
---   -- |
---   -- An array indexer expression
---   --
---   | JSIndexer (Maybe SourceSpan) JS JS
---   -- |
---   -- An object literal
---   --
---   | JSObjectLiteral (Maybe SourceSpan) [(String, JS)]
---   -- |
---   -- An object property accessor expression
---   --
---   | JSAccessor (Maybe SourceSpan) String JS
---   -- |
---   -- A function introduction (optional name, arguments, body)
---   --
---   | JSFunction (Maybe SourceSpan) (Maybe String) [String] JS
---   -- |
---   -- Function application
---   --
---   | JSApp (Maybe SourceSpan) JS [JS]
---   -- |
---   -- Variable
---   --
---   | JSVar (Maybe SourceSpan) String
---   -- |
---   -- Conditional expression
---   --
---   | JSConditional (Maybe SourceSpan) JS JS JS
---   -- |
---   -- A block of expressions in braces
---   --
---   | JSBlock (Maybe SourceSpan) [JS]
---   -- |
---   -- A variable introduction and optional initialization
---   --
---   | JSVariableIntroduction (Maybe SourceSpan) String (Maybe JS)
---   -- |
---   -- A variable assignment
---   --
---   | JSAssignment (Maybe SourceSpan) JS JS
---   -- |
---   -- While loop
---   --
---   | JSWhile (Maybe SourceSpan) JS JS
---   -- |
---   -- For loop
---   --
---   | JSFor (Maybe SourceSpan) String JS JS JS
---   -- |
---   -- ForIn loop
---   --
---   | JSForIn (Maybe SourceSpan) String JS JS
---   -- |
---   -- If-then-else statement
---   --
---   | JSIfElse (Maybe SourceSpan) JS JS (Maybe JS)
---   -- |
---   -- Return statement
---   --
---   | JSReturn (Maybe SourceSpan) JS
---   -- |
---   -- Throw statement
---   --
---   | JSThrow (Maybe SourceSpan) JS
---   -- |
---   -- Type-Of operator
---   --
---   | JSTypeOf (Maybe SourceSpan) JS
---   -- |
---   -- InstanceOf test
---   --
---   | JSInstanceOf (Maybe SourceSpan) JS JS
---   -- |
---   -- Labelled statement
---   --
---   | JSLabel (Maybe SourceSpan) String JS
---   -- |
---   -- Break statement
---   --
---   | JSBreak (Maybe SourceSpan) String
---   -- |
---   -- Continue statement
---   --
---   | JSContinue (Maybe SourceSpan) String
---   -- |
---   -- Raw Javascript (generated when parsing fails for an inline foreign import declaration)
---   --
---   | JSRaw (Maybe SourceSpan) String
---   -- |
---   -- Commented Javascript
---   --
---   | JSComment (Maybe SourceSpan) [Comment] JS deriving (Show, Read, Eq)
-
 
 -- \ Possibly qualified atom
 -- | TODO : This is not really an atom, each part is an atom.
@@ -345,3 +248,50 @@ data BinaryOperator
   -- --
   -- | ZeroFillShiftRight
   deriving (Show, Read, Eq)
+
+everywhereOnErl :: (Erl -> Erl) -> Erl -> Erl
+everywhereOnErl f = go
+  where
+  go :: Erl -> Erl
+  go (EUnary op e) = f $ EUnary op (go e)
+  go (EBinary op e1 e2) = f $ EBinary op (go e1) (go e2)
+  go (EFunctionDef a ss e) = f $ EFunctionDef a ss (go e)
+  go (EVarBind x e) = f $ EVarBind x (go e)
+  go (EFun x s e) = f $ EFun x s (go e)
+  go (EFunFull fname args) = f $ EFunFull fname $ map (second go) args
+  go (EApp e es) = f $ EApp (go e) (map go es)
+  go (EBlock es) = f $ EBlock (map go es)
+  go (ETupleLiteral es) = f $ ETupleLiteral (map go es)
+  go (EMapLiteral binds) = f $ EMapLiteral $ map (second go) binds
+  go (EMapPattern binds) = f $ EMapPattern $ map (second go) binds
+  go (EMapUpdate e binds) = f $ EMapUpdate (go e) $ map (second go) binds
+  go (ECaseOf e binds) = f $ ECaseOf (go e) $ map (second go) binds
+  go (EArrayLiteral es) = f $ EArrayLiteral (map go es)
+  go other = f other
+
+everywhereOnErlTopDown :: (Erl -> Erl) -> Erl -> Erl
+everywhereOnErlTopDown f = runIdentity . everywhereOnErlTopDownM (Identity . f)
+
+everywhereOnErlTopDownM :: forall m. (Monad m) => (Erl -> m Erl) -> Erl -> m Erl
+everywhereOnErlTopDownM f = f >=> go
+  where
+  f' = f >=> go
+
+  fargs :: [(x, Erl)] -> m [(x, Erl)]
+  fargs = traverse (sequence . second f')
+
+  go (EUnary op e) = EUnary op <$> f' e
+  go (EBinary op e1 e2) = EBinary op <$> f' e1 <*> f' e2
+  go (EFunctionDef a ss e) = EFunctionDef a ss <$> f' e
+  go (EVarBind x e) = EVarBind x <$> f' e
+  go (EFun x s e) = EFun x s <$> f' e
+  go (EFunFull fname args) = EFunFull fname <$> fargs args
+  go (EApp e es) = EApp <$> f' e <*> traverse f' es
+  go (EBlock es) = EBlock <$> traverse f' es
+  go (ETupleLiteral es) = ETupleLiteral <$> traverse f' es
+  go (EMapLiteral binds) = EMapLiteral <$> fargs binds
+  go (EMapPattern binds) = EMapPattern <$> fargs binds
+  go (EMapUpdate e binds) = EMapUpdate <$> f' e <*> fargs binds
+  go (ECaseOf e binds) = ECaseOf <$> f' e <*> fargs binds
+  go (EArrayLiteral es) = EArrayLiteral <$> traverse f' es
+  go other = f other

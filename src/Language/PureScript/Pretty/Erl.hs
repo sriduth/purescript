@@ -78,7 +78,7 @@ literals = mkPattern' match
     , prettyPrintErl' e
     , return $ emit " end"
     ]
-  match (EFunFull binders) = mconcat <$> sequence
+  match (EFunFull name binders) = mconcat <$> sequence
     [ return $ emit "fun\n"
     , prettyPrintBinders binders
     , return $ emit "\nend"
@@ -94,7 +94,7 @@ literals = mkPattern' match
           g' <- case ge of
             Just (Guard g) -> (emit " when " <>) <$> prettyPrintErl' g
             Nothing -> return $ emit ""
-          return $ parensPos b' <> g' <> emit " -> " <> v --parensPos b' <> g' <> emit " -> " <> v
+          return $ emit (fromMaybe "" name) <> parensPos b' <> g' <> emit " -> " <> v --parensPos b' <> g' <> emit " -> " <> v
 
   match (ECaseOf e binders) = do
     e' <- prettyPrintErl' e
