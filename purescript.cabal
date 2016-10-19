@@ -173,6 +173,8 @@ library
                      Language.PureScript.CodeGen.Erl.Optimizer.MagicDo
                      Language.PureScript.CodeGen.Erl.Optimizer.Blocks
                      Language.PureScript.CodeGen.Erl.Optimizer.Unused
+                     Language.PureScript.CodeGen.Erl.Optimizer.Inliner
+                     Language.PureScript.CodeGen.Erl.Optimizer.Guards
                      Language.PureScript.CodeGen.JS
                      Language.PureScript.CodeGen.JS.AST
                      Language.PureScript.CodeGen.JS.Common
