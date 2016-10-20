@@ -16,7 +16,10 @@ collapseNestedBlocks :: Erl -> Erl
 collapseNestedBlocks = everywhereOnErl collapse
   where
   collapse :: Erl -> Erl
-  collapse (EBlock sts) = EBlock (concatMap go sts)
+  collapse (EBlock sts) =
+    case concatMap go sts of
+      [s] -> s
+      sts' -> EBlock sts'
   collapse js = js
   go :: Erl -> [Erl]
   go (EBlock sts) = sts
