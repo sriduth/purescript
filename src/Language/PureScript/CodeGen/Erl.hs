@@ -238,20 +238,16 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
       bs <- mapM binderToErl' binders
       res <- mapM (guard bs) guards
       pure (concatMap fst res, map snd res)
-      where guard bs (Literal _ l, e) = do
-              lit <- literalToValueErl l
-              let bnd = EFunBinder bs (Just $ Guard lit)
-              e' <- valueToErl e
-              pure ([], (bnd, e'))
-            guard bs (ge, e) = do
-              var <- freshNameErl
-              ge' <- valueToErl ge
-              let fun = EFunFull Nothing
-                                  [(EFunBinder bs Nothing, ge'),
-                                  (EFunBinder (replicate (length bs) (EVar "_")) Nothing, boolToAtom False)]
-                  cas = EApp fun vals
-              e' <- valueToErl e
-              pure ([EVarBind var cas], (EFunBinder bs (Just $ Guard $ EVar var), e'))
+      where
+        guard bs (ge, e) = do
+          var <- freshNameErl
+          ge' <- valueToErl ge
+          let fun = EFunFull Nothing
+                      [(EFunBinder bs Nothing, ge'),
+                      (EFunBinder (replicate (length bs) (EVar "_")) Nothing, boolToAtom False)]
+              cas = EApp fun vals
+          e' <- valueToErl e
+          pure ([EVarBind var cas], (EFunBinder bs (Just $ Guard $ EVar var), e'))
 
   binderToErl' :: Binder Ann -> m Erl
   binderToErl' (NullBinder _) = pure $ EVar "_"

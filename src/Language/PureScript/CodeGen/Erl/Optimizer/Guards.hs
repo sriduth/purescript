@@ -5,11 +5,7 @@ module Language.PureScript.CodeGen.Erl.Optimizer.Guards where
 
 import Prelude.Compat
 
-import Data.Maybe (catMaybes)
-import Control.Arrow (second)
-
 import Language.PureScript.CodeGen.Erl.AST
-
 
 inlineSimpleGuards :: Erl -> Erl
 inlineSimpleGuards = everywhereOnErl convert
@@ -24,20 +20,17 @@ inlineSimpleGuards = everywhereOnErl convert
       _ -> EBlock es
   convert other = other
 
-  convert' vars ((EFunBinder binds (Just (Guard (EVar x))), e) : es)
-    (EVarBind x' (EApp (EFunFull Nothing [(EFunBinder binds' Nothing, eg), defBind]) vars') : ebs)
+  convert' vars (efb@(EFunBinder binds guard, e) : es)
+    (eb@(EVarBind x (EApp (EFunFull Nothing [(EFunBinder binds' Nothing, eg), defBind]) vars')) : ebs)
     acc_es acc_ebs
-    | binds == binds' && vars == vars' && x == x' && guardExpr eg && isDefaultBinder defBind
-    = convert' vars es ebs ((EFunBinder binds (Just (Guard eg)), e) : acc_es) acc_ebs
+    | binds == binds' && vars == vars' && isGuardVar x guard && isDefaultBinder defBind
+    = if guardExpr eg then
+        convert' vars es ebs ((EFunBinder binds (Just (Guard eg)), e) : acc_es) acc_ebs
+      else
+        convert' vars es ebs (efb:acc_es) (eb:acc_ebs)
   convert' vars (efb@(EFunBinder _ guard, _) : es) (eb@(EVarBind x _) : ebs) acc_es acc_ebs
     | not (isGuardVar x guard)
     = convert' vars es (eb:ebs) (efb:acc_es) acc_ebs
-
-  convert' vars (efb@(EFunBinder binds (Just (Guard (EVar x))), e) : es)
-    (eb@(EVarBind x' (EApp (EFunFull Nothing [(EFunBinder binds' Nothing, _), defBind]) vars')) : ebs)
-    acc_es acc_ebs
-    | binds == binds' && vars == vars' && x == x' && isDefaultBinder defBind
-    = convert' vars es ebs (efb:acc_es) (eb:acc_ebs)
   convert' _ efb es acc_es acc_ebs = (reverse acc_es ++ efb, reverse acc_ebs ++ es)
 
   isGuardVar x (Just (Guard (EVar x'))) | x == x' = True
