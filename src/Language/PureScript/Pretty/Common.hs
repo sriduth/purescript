@@ -114,12 +114,18 @@ blockIndent = 4
 -- |
 -- Pretty print with a new indentation level
 --
-withIndent :: StateT PrinterState Maybe gen -> StateT PrinterState Maybe gen
-withIndent action = do
-  modify $ \st -> st { indent = indent st + blockIndent }
+withIndent' :: Int -> StateT PrinterState Maybe gen -> StateT PrinterState Maybe gen
+withIndent' indentSize action = do
+  modify $ \st -> st { indent = indent st + indentSize }
   result <- action
-  modify $ \st -> st { indent = indent st - blockIndent }
+  modify $ \st -> st { indent = indent st - indentSize }
   return result
+
+-- |
+-- Pretty print with a new indentation level
+--
+withIndent :: StateT PrinterState Maybe gen -> StateT PrinterState Maybe gen
+withIndent = withIndent' blockIndent
 
 -- |
 -- Get the current indentation level

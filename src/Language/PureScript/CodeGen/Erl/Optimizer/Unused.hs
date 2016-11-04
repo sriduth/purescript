@@ -10,6 +10,8 @@ import Prelude.Compat
 import Language.PureScript.CodeGen.Erl.AST
 import qualified Language.PureScript.Constants as C
 
+-- TODO This is not safe to do, arity is important!
+
 removeUnusedArg :: Erl -> Erl
 removeUnusedArg = everywhereOnErl convert
   where

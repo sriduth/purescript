@@ -11,12 +11,15 @@ import qualified Control.Arrow as A
 import Language.PureScript.Crash
 import Language.PureScript.CodeGen.Erl.AST
 import Language.PureScript.CodeGen.Erl.Common
-import Language.PureScript.Pretty.Common
+import Language.PureScript.Pretty.Common hiding (withIndent)
 
 import Data.Monoid
 
 import Debug.Trace
 import Data.Maybe (fromMaybe)
+
+withIndent :: StateT PrinterState Maybe gen -> StateT PrinterState Maybe gen
+withIndent = withIndent' 2
 
 literals :: (Emit gen) => Pattern PrinterState Erl gen
 literals = mkPattern' match
@@ -63,25 +66,41 @@ literals = mkPattern' match
     , return $ emit "]"
     ]
 
-  match (EBlock es) = do
-    es' <- mapM prettyPrintErl' es
-    let lns = intercalate (emit ",\n") es'
-    return $ emit "begin\n" <> lns <> emit "\nend\n"
+  match (EBlock es) =
+    mconcat <$> sequence
+      [ return $ emit "begin\n"
+      , withIndent $ prettyPrintBlockBody es
+      , return $ emit "\n"
+      , currentIndent
+      , return $ emit "end"
+      ]
 
   match (EComment s) =
-    return $ emit $ "\n% " ++ s ++ "\n"
-
+    mconcat <$> sequence
+      [ return $ emit "\n"
+      , currentIndent
+      , return $ emit $ "% " ++ s ++ "\n"
+      ]
 
   match (EFunRef x n) = return $ emit $ "fun " <> runAtom x <> "/" <> show n
   match (EFun name x e) = mconcat <$> sequence
-    [ return $ emit $ "fun " <> fromMaybe "" name <> "(" <> x <> ") -> "
-    , prettyPrintErl' e
-    , return $ emit " end"
+    [ return $ emit $ "fun " <> fromMaybe "" name <> "(" <> x <> ") ->\n"
+    , withIndent $ matchBody e
+    , return $ emit "\n"
+    , currentIndent
+    , return $ emit "end"
     ]
+    where
+      matchBody (EBlock es) = prettyPrintBlockBody es
+      matchBody _ = mconcat <$> sequence
+          [ currentIndent
+          , prettyPrintErl' e ]
   match (EFunFull name binders) = mconcat <$> sequence
     [ return $ emit "fun\n"
-    , prettyPrintBinders binders
-    , return $ emit "\nend"
+    , withIndent $ prettyPrintBinders binders
+    , return $ emit "\n"
+    , currentIndent
+    , return $ emit "end"
     ]
     where
         prettyPrintBinders :: (Emit gen) => [(EFunBinder, Erl)] -> StateT PrinterState Maybe gen
@@ -94,7 +113,8 @@ literals = mkPattern' match
           g' <- case ge of
             Just (Guard g) -> (emit " when " <>) <$> prettyPrintErl' g
             Nothing -> return $ emit ""
-          return $ emit (fromMaybe "" name) <> parensPos b' <> g' <> emit " -> " <> v --parensPos b' <> g' <> emit " -> " <> v
+          indentStr <- currentIndent
+          return $ indentStr <> emit (fromMaybe "" name) <> parensPos b' <> g' <> emit " -> " <> v --parensPos b' <> g' <> emit " -> " <> v
 
   match (ECaseOf e binders) = do
     e' <- prettyPrintErl' e
@@ -115,8 +135,14 @@ literals = mkPattern' match
       g <- prettyPrintErl' eg
       return $ parensPos c <> emit " when "  <> g <> emit " -> " <> v
 
-
   match e = traceShow e mzero
+
+prettyPrintBlockBody :: (Emit gen) => [Erl] -> StateT PrinterState Maybe gen
+prettyPrintBlockBody es = do
+  es' <- mapM prettyPrintErl' es
+  indentStr <- currentIndent
+  let lns = intercalate (emit ",\n" <> indentStr) es'
+  pure $ indentStr <> lns
 
 escapeChar :: Char -> String
 escapeChar '\\' = "\\\\"

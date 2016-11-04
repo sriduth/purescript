@@ -42,7 +42,7 @@ optimize' erl = do
   tidyUp :: Erl -> Erl
   tidyUp = applyAll
     [ collapseNestedBlocks
-    , removeUnusedArg
+    -- , removeUnusedArg
     , inlineSimpleGuards
     ]
 

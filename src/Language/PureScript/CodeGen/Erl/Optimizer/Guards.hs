@@ -36,7 +36,8 @@ inlineSimpleGuards = everywhereOnErl convert
   isGuardVar x (Just (Guard (EVar x'))) | x == x' = True
   isGuardVar _ _ = False
 
-  isDefaultBinder (EFunBinder [EVar "_", EVar "_"] Nothing, EAtomLiteral (Atom Nothing "false")) = True
+  isDefaultBinder (EFunBinder vars Nothing, EAtomLiteral (Atom Nothing "false"))
+    | not (null vars) && all (EVar "_" ==) vars = True
   isDefaultBinder _ = False
 
   -- | Simple expression which can appear as a guard
