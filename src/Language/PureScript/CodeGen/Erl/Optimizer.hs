@@ -35,6 +35,7 @@ optimize' erl = do
   erl' <- untilFixedPoint (pure . tidyUp . applyAll
     [ inlineCommonValues
     , inlineCommonOperators
+    , evaluateIifes
     ]) erl
   untilFixedPoint (pure . tidyUp) . magicDo opts $ erl'
 

@@ -106,15 +106,20 @@ literals = mkPattern' match
         prettyPrintBinders :: (Emit gen) => [(EFunBinder, Erl)] -> StateT PrinterState Maybe gen
         prettyPrintBinders bs = intercalate (emit ";\n") <$> mapM prettyPrintBinder bs
 
+        matchBody (EBlock es) = prettyPrintBlockBody es
+        matchBody e = mconcat <$> sequence
+            [ currentIndent
+            , prettyPrintErl' e ]
+
         prettyPrintBinder :: (Emit gen) => (EFunBinder, Erl) -> StateT PrinterState Maybe gen
         prettyPrintBinder (EFunBinder binds ge, e') = do
           b' <- intercalate (emit ", ") <$> mapM prettyPrintErl' binds
-          v <- prettyPrintErl' e'
+          v <- matchBody e'
           g' <- case ge of
             Just (Guard g) -> (emit " when " <>) <$> prettyPrintErl' g
             Nothing -> return $ emit ""
           indentStr <- currentIndent
-          return $ indentStr <> emit (fromMaybe "" name) <> parensPos b' <> g' <> emit " -> " <> v --parensPos b' <> g' <> emit " -> " <> v
+          return $ indentStr <> emit (fromMaybe "" name) <> parensPos b' <> g' <> emit " -> \n" <> v --parensPos b' <> g' <> emit " -> " <> v
 
   match (ECaseOf e binders) = do
     e' <- prettyPrintErl' e

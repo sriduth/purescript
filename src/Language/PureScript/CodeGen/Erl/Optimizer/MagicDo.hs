@@ -32,9 +32,11 @@ magicDo' = everywhereOnErl undo . everywhereOnErlTopDown convert
   -- Desugar >>=
   convert (EApp (EApp bind [m]) [EFun Nothing "__unused" e]) | isBind bind =
     EFunFull (Just fnName) [(EFunBinder [] Nothing, EBlock (EApp m [] : [ EApp e [] ]))]
-  -- TODO check arg is free properly rather than special casing __unused only
-  -- convert (EApp (EApp bind [m]) [EFun Nothing var e]) | isBind bind =
-  --   EFunFull (Just fnName) [(EFunBinder [] Nothing, EBlock (EVarBind var (EApp m []) : [ EApp e [] ]))]
+  convert (EApp (EApp bind [m]) [EFun Nothing var e]) | isBind bind =
+    EFunFull (Just fnName) [(EFunBinder [] Nothing, EBlock (EVarBind var (EApp m []) : [ EApp e [] ]))]
+  convert (EApp (EApp bind [m]) [EFunFull Nothing [(EFunBinder [EVar var] Nothing, e)]]) | isBind bind =
+    EFunFull (Just fnName) [(EFunBinder [] Nothing, EBlock (EVarBind var (EApp m []) : [ EApp e [] ]))]
+
 
   convert other = other
   -- Check if an expression represents a monomorphic call to >>= for the Eff monad

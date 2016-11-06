@@ -4,13 +4,14 @@
 module Language.PureScript.CodeGen.Erl.Optimizer.Inliner
 --   ( inlineVariables
   ( inlineCommonValues
-  , inlineCommonOperators )
+  , inlineCommonOperators
+  , evaluateIifes
+  )
   where
 --   , inlineCommonOperators
 --   , inlineFnComposition
 --   , etaConvert
 --   , unThunk
---   , evaluateIifes
 --   ) where
 --
 import Prelude.Compat
@@ -61,13 +62,15 @@ import qualified Language.PureScript.CodeGen.Erl.Constants as EC
 --       _ -> JSBlock ss jss
 --   convert js = js
 --
--- evaluateIifes :: JS -> JS
--- evaluateIifes = everywhereOnJS convert
---   where
---   convert :: JS -> JS
---   convert (JSApp _ (JSFunction _ Nothing [] (JSBlock _ [JSReturn _ ret])) []) = ret
---   convert js = js
---
+
+-- fun (X) -> fun {body} end(X) end  --> fun {body} end
+evaluateIifes :: Erl -> Erl
+evaluateIifes = everywhereOnErl convert
+  where
+  convert :: Erl -> Erl
+  -- TODO: check var does not occur in fun
+  convert (EFun Nothing x (EApp fun@EFunFull{} [EVar x'])) | x == x' = fun
+  convert e = e
 -- inlineVariables :: JS -> JS
 -- inlineVariables = everywhereOnJS $ removeFromBlock go
 --   where
