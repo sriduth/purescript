@@ -20,6 +20,7 @@ import qualified Data.Map as M
 import qualified Data.Aeson as A
 import qualified Data.ByteString.Lazy as B
 import qualified Data.ByteString.UTF8 as BU8
+import Data.Text (Text)
 
 import Options.Applicative as Opts
 
@@ -100,8 +101,8 @@ globWarningOnMisses warn = concatMapM globWithWarning
     return paths
   concatMapM f = liftM concat . mapM f
 
-readInput :: [FilePath] -> IO [(FilePath, String)]
-readInput inputFiles = forM inputFiles $ \inFile -> (inFile, ) <$> readUTF8File inFile
+readInput :: [FilePath] -> IO [(FilePath, Text)]
+readInput inputFiles = forM inputFiles $ \inFile -> (inFile, ) <$> readUTF8FileT inFile
 
 inputFile :: Parser FilePath
 inputFile = strArgument $

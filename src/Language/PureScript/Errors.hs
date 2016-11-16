@@ -119,6 +119,8 @@ errorCode em = case unwrapErrorMessage em of
   ConstrainedTypeUnified{} -> "ConstrainedTypeUnified"
   OverlappingInstances{} -> "OverlappingInstances"
   NoInstanceFound{} -> "NoInstanceFound"
+  AmbiguousTypeVariables{} -> "AmbiguousTypeVariables"
+  UnknownClass{} -> "UnknownClass"
   PossiblyInfiniteInstance{} -> "PossiblyInfiniteInstance"
   CannotDerive{} -> "CannotDerive"
   InvalidNewtypeInstance{} -> "InvalidNewtypeInstance"
@@ -168,7 +170,7 @@ errorCode em = case unwrapErrorMessage em of
   DeprecatedRequirePath{} -> "DeprecatedRequirePath"
   CannotGeneralizeRecursiveFunction{} -> "CannotGeneralizeRecursiveFunction"
   CannotDeriveNewtypeForData{} -> "CannotDeriveNewtypeForData"
-  NonWildcardNewtypeInstance{} -> "NonWildcardNewtypeInstance"
+  ExpectedWildcard{} -> "ExpectedWildcard"
 
 -- |
 -- A stack trace for an error
@@ -261,6 +263,7 @@ onTypesInErrorMessageM f (ErrorMessage hints simple) = ErrorMessage <$> traverse
   gSimple (ExprDoesNotHaveType e t) = ExprDoesNotHaveType e <$> f t
   gSimple (InvalidInstanceHead t) = InvalidInstanceHead <$> f t
   gSimple (NoInstanceFound con) = NoInstanceFound <$> overConstraintArgs (traverse f) con
+  gSimple (AmbiguousTypeVariables t con) = AmbiguousTypeVariables <$> (f t) <*> pure con
   gSimple (OverlappingInstances cl ts insts) = OverlappingInstances cl <$> traverse f ts <*> pure insts
   gSimple (PossiblyInfiniteInstance cl ts) = PossiblyInfiniteInstance cl <$> traverse f ts
   gSimple (CannotDerive cl ts) = CannotDerive cl <$> traverse f ts
@@ -608,6 +611,11 @@ prettyPrintSingleError (PPEOptions codeColor full level showWiki) e = flip evalS
             , line "They may be disallowed completely in a future version of the compiler."
             ]
     renderSimpleErrorMessage OverlappingInstances{} = internalError "OverlappingInstances: empty instance list"
+    renderSimpleErrorMessage (UnknownClass nm) =
+      paras [ line "No type class instance was found for class"
+            , markCodeBox $ indent $ line (showQualified runProperName nm)
+            , line "because the class was not in scope. Perhaps it was not exported."
+            ]
     renderSimpleErrorMessage (NoInstanceFound (Constraint C.Fail [ ty ] _)) | Just box <- toTypelevelString ty =
       paras [ line "A custom type error occurred while solving type class constraints:"
             , indent box
@@ -639,6 +647,11 @@ prettyPrintSingleError (PPEOptions codeColor full level showWiki) e = flip evalS
         where
         go TUnknown{} = True
         go _ = False
+    renderSimpleErrorMessage (AmbiguousTypeVariables t _) =
+      paras [ line "The inferred type"
+            , markCodeBox $ indent $ typeAsBox t
+            , line "has type variables which are not mentioned in the body of the type. Consider adding a type annotation."
+            ]
     renderSimpleErrorMessage (PossiblyInfiniteInstance nm ts) =
       paras [ line "Type class instance for"
             , markCodeBox $ indent $ Box.hsep 1 Box.left
@@ -868,8 +881,8 @@ prettyPrintSingleError (PPEOptions codeColor full level showWiki) e = flip evalS
       paras [ line $ "Cannot derive an instance of the " ++ markCode "Newtype" ++ " class for non-newtype " ++ markCode (runProperName tyName) ++ "."
             ]
 
-    renderSimpleErrorMessage (NonWildcardNewtypeInstance tyName) =
-      paras [ line $ "A type wildcard (_) should be used for the inner type when deriving the " ++ markCode "Newtype" ++ " instance for " ++ markCode (runProperName tyName) ++ "."
+    renderSimpleErrorMessage (ExpectedWildcard tyName) =
+      paras [ line $ "Expected a type wildcard (_) when deriving an instance for " ++ markCode (runProperName tyName) ++ "."
             ]
 
     renderHint :: ErrorMessageHint -> Box.Box -> Box.Box
