@@ -16,6 +16,7 @@ import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.State.Class (MonadState(..), modify)
 import Control.Monad.Supply.Class (MonadSupply)
 import Control.Monad.Writer.Class (MonadWriter(..))
+import Control.Lens ((^..), _1, _2)
 
 import Data.Foldable (for_, traverse_)
 import Data.List (nub, nubBy, (\\), sort, group)
@@ -134,7 +135,7 @@ addTypeClass moduleName pn args implies dependencies ds =
 addTypeClassDictionaries
   :: (MonadState CheckState m)
   => Maybe ModuleName
-  -> M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) TypeClassDictionaryInScope)
+  -> M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) NamedDict)
   -> m ()
 addTypeClassDictionaries mn entries =
   modify $ \st -> st { checkEnv = (checkEnv st) { typeClassDictionaries = insertState st } }
@@ -205,9 +206,10 @@ typeCheckAll moduleName _ = traverse go
       addDataType moduleName dtype name args' dctors ctorKind
     return $ DataDeclaration dtype name args dctors
   go (d@(DataBindingGroupDeclaration tys)) = do
-    warnAndRethrow (addHint ErrorInDataBindingGroup) $ do
-      let syns = mapMaybe toTypeSynonym tys
-      let dataDecls = mapMaybe toDataDecl tys
+    let syns = mapMaybe toTypeSynonym tys
+        dataDecls = mapMaybe toDataDecl tys
+        bindingGroupNames = nub ((syns^..traverse._1) ++ (dataDecls^..traverse._2))
+    warnAndRethrow (addHint (ErrorInDataBindingGroup bindingGroupNames)) $ do
       (syn_ks, data_ks) <- kindsOfAll moduleName syns (map (\(_, name, args, dctors) -> (name, args, concatMap snd dctors)) dataDecls)
       for_ (zip dataDecls data_ks) $ \((dtype, name, args, dctors), ctorKind) -> do
         when (dtype == Newtype) $ checkNewtype name dctors
@@ -282,7 +284,7 @@ typeCheckAll moduleName _ = traverse go
     checkOrphanInstance dictName className tys
     _ <- traverseTypeInstanceBody checkInstanceMembers body
     let dict = TypeClassDictionaryInScope (Qualified (Just moduleName) dictName) [] className tys (Just deps)
-    addTypeClassDictionaries (Just moduleName) . M.singleton className $ M.singleton (tcdName dict) dict
+    addTypeClassDictionaries (Just moduleName) . M.singleton className $ M.singleton (tcdValue dict) dict
     return d
   go (PositionedDeclaration pos com d) =
     warnAndRethrowWithPosition pos $ PositionedDeclaration pos com <$> go d

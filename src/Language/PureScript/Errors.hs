@@ -977,9 +977,9 @@ prettyPrintSingleError (PPEOptions codeColor full level showWiki) e = flip evalS
       paras [ detail
             , line $ "in binding group " ++ intercalate ", " (map showIdent nms)
             ]
-    renderHint ErrorInDataBindingGroup detail =
+    renderHint (ErrorInDataBindingGroup nms) detail =
       paras [ detail
-            , line "in data binding group"
+            , line $ "in data binding group " ++ intercalate ", " (map runProperName nms)
             ]
     renderHint (ErrorInTypeSynonym name) detail =
       paras [ detail
@@ -992,6 +992,10 @@ prettyPrintSingleError (PPEOptions codeColor full level showWiki) e = flip evalS
     renderHint (ErrorInTypeDeclaration n) detail =
       paras [ detail
             , line $ "in type declaration for " ++ markCode (showIdent n)
+            ]
+    renderHint (ErrorInTypeClassDeclaration name) detail =
+      paras [ detail
+            , line $ "in type class declaration for " ++ markCode (runProperName name)
             ]
     renderHint (ErrorInForeignImport nm) detail =
       paras [ detail

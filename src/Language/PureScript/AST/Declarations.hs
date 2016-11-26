@@ -154,10 +154,11 @@ data ErrorMessageHint
   | ErrorInDataConstructor (ProperName 'ConstructorName)
   | ErrorInTypeConstructor (ProperName 'TypeName)
   | ErrorInBindingGroup [Ident]
-  | ErrorInDataBindingGroup
+  | ErrorInDataBindingGroup [ProperName 'TypeName]
   | ErrorInTypeSynonym (ProperName 'TypeName)
   | ErrorInValueDeclaration Ident
   | ErrorInTypeDeclaration Ident
+  | ErrorInTypeClassDeclaration (ProperName 'ClassName)
   | ErrorInForeignImport Ident
   | ErrorSolvingConstraint Constraint
   | PositionedError SourceSpan
@@ -608,7 +609,7 @@ data Expr
   -- instance type, and the type class dictionaries in scope.
   --
   | TypeClassDictionary Constraint
-                        (M.Map (Maybe ModuleName) (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) TypeClassDictionaryInScope)))
+                        (M.Map (Maybe ModuleName) (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) NamedDict)))
                         [ErrorMessageHint]
   -- |
   -- A typeclass dictionary accessor, the implementation is left unspecified until CoreFn desugaring.
