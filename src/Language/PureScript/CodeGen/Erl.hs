@@ -1,7 +1,7 @@
 {-# LANGUAGE GADTs #-}
 
 -- |
--- This module generates code in the simplified Javascript intermediate representation from Purescript code
+-- This module generates code in the simplified Erlang intermediate representation from Purescript code
 --
 module Language.PureScript.CodeGen.Erl
   ( module AST
@@ -252,6 +252,7 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
   binderToErl' :: Binder Ann -> m Erl
   binderToErl' (NullBinder _) = pure $ EVar "_"
   binderToErl' (VarBinder _ ident) = pure $ EVar $ identToVar ident
+  binderToErl' (LiteralBinder _ (ArrayLiteral _)) = error "Array patterns not supported for Erlang backend"
   binderToErl' (LiteralBinder _ lit) = literalToValueErl' EMapPattern binderToErl' lit
   binderToErl' (ConstructorBinder (_, _, _, Just IsNewtype) _ _ [b]) = binderToErl' b
   binderToErl' (ConstructorBinder _ _ (Qualified _ (ProperName ctorName)) binders) = do
