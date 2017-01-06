@@ -49,8 +49,6 @@ moduleExports :: forall m .
 moduleExports (Module _ _ _ exps _ _) _ = do
   -- TODO nub temporary
   let exps' = nub $ map ((++ "/0") . runAtom . Atom Nothing . runIdent) exps
-  -- traceM $ "Exports: " ++ show exps
-  -- traceM $ "Exports/2: " ++ show dctorExports
   pure $ "-export([" ++ intercalate ", " exps' ++ "])."
 
   where
@@ -134,6 +132,7 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
   -- Top level definitions are everywhere fully qualified, variables are not.
   qualifiedToErl (Qualified (Just mn') ident) | mn == mn' = Atom Nothing (runIdent ident)
   qualifiedToErl (Qualified (Just mn') ident) = qualifiedToErl' mn' False ident
+  qualifiedToErl _ = error "Invalid qualified identifier"
 
   qualifiedToVar (Qualified _ ident) = identToVar ident
 

@@ -15,7 +15,6 @@ import Language.PureScript.Pretty.Common hiding (withIndent)
 
 import Data.Monoid
 
-import Debug.Trace
 import Data.Maybe (fromMaybe)
 
 withIndent :: StateT PrinterState Maybe gen -> StateT PrinterState Maybe gen
@@ -140,7 +139,7 @@ literals = mkPattern' match
       g <- prettyPrintErl' eg
       return $ parensPos c <> emit " when "  <> g <> emit " -> " <> v
 
-  match e = traceShow e mzero
+  match _ = mzero
 
 prettyPrintBlockBody :: (Emit gen) => [Erl] -> StateT PrinterState Maybe gen
 prettyPrintBlockBody es = do
