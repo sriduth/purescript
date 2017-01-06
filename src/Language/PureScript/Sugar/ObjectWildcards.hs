@@ -15,6 +15,7 @@ import Data.Maybe (catMaybes)
 import Language.PureScript.AST
 import Language.PureScript.Errors
 import Language.PureScript.Names
+import Language.PureScript.PSString (PSString)
 
 desugarObjectConstructors
   :: forall m
@@ -61,7 +62,7 @@ desugarDecl other = fn other
     return $ foldr (Abs . Left) if_ (catMaybes [u', t', f'])
   desugarExpr e = return e
 
-  wrapLambda :: ([(String, Expr)] -> Expr) -> [(String, Expr)] -> m Expr
+  wrapLambda :: ([(PSString, Expr)] -> Expr) -> [(PSString, Expr)] -> m Expr
   wrapLambda mkVal ps =
     let (args, props) = partition (isAnonymousArgument . snd) ps
     in if null args
@@ -74,7 +75,7 @@ desugarDecl other = fn other
   stripPositionInfo (PositionedValue _ _ e) = stripPositionInfo e
   stripPositionInfo e = e
 
-  peelAnonAccessorChain :: Expr -> Maybe [String]
+  peelAnonAccessorChain :: Expr -> Maybe [PSString]
   peelAnonAccessorChain (Accessor p e) = (p :) <$> peelAnonAccessorChain e
   peelAnonAccessorChain (PositionedValue _ _ e) = peelAnonAccessorChain e
   peelAnonAccessorChain AnonymousArgument = Just []
@@ -85,7 +86,7 @@ desugarDecl other = fn other
   isAnonymousArgument (PositionedValue _ _ e) = isAnonymousArgument e
   isAnonymousArgument _ = False
 
-  mkProp :: (String, Expr) -> m (Maybe Ident, (String, Expr))
+  mkProp :: (PSString, Expr) -> m (Maybe Ident, (PSString, Expr))
   mkProp (name, e) = do
     arg <- freshIfAnon e
     return (arg, (name, maybe e argToExpr arg))

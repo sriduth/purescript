@@ -11,12 +11,15 @@ import Control.Monad.Identity
 
 import Data.Aeson.TH
 import qualified Data.Map as M
+import Data.Text (Text)
 
 import Language.PureScript.AST.Binders
 import Language.PureScript.AST.Literals
 import Language.PureScript.AST.Operators
 import Language.PureScript.AST.SourcePos
 import Language.PureScript.Types
+import Language.PureScript.PSString (PSString)
+import Language.PureScript.Label (Label)
 import Language.PureScript.Names
 import Language.PureScript.Kinds
 import Language.PureScript.TypeClassDictionaries
@@ -47,7 +50,7 @@ data SimpleErrorMessage
   | UnnecessaryFFIModule ModuleName FilePath
   | MissingFFIImplementations ModuleName [Ident]
   | UnusedFFIImplementations ModuleName [Ident]
-  | InvalidFFIIdentifier ModuleName String
+  | InvalidFFIIdentifier ModuleName Text
   | CannotGetFileInfo FilePath
   | CannotReadFile FilePath
   | CannotWriteFile FilePath
@@ -68,7 +71,7 @@ data SimpleErrorMessage
   | DeclConflict Name Name
   | ExportConflict (Qualified Name) (Qualified Name)
   | DuplicateModule ModuleName [SourceSpan]
-  | DuplicateTypeArgument String
+  | DuplicateTypeArgument Text
   | InvalidDoBind
   | InvalidDoLet
   | CycleInDeclaration Ident
@@ -89,7 +92,7 @@ data SimpleErrorMessage
   | CannotDerive (Qualified (ProperName 'ClassName)) [Type]
   | InvalidNewtypeInstance (Qualified (ProperName 'ClassName)) [Type]
   | CannotFindDerivingType (ProperName 'TypeName)
-  | DuplicateLabel String (Maybe Expr)
+  | DuplicateLabel Label (Maybe Expr)
   | DuplicateValueDeclaration Ident
   | ArgListLengthsDiffer Ident
   | OverlappingArgNames (Maybe Ident)
@@ -98,8 +101,8 @@ data SimpleErrorMessage
   | ExpectedType Type Kind
   | IncorrectConstructorArity (Qualified (ProperName 'ConstructorName))
   | ExprDoesNotHaveType Expr Type
-  | PropertyIsMissing String
-  | AdditionalProperty String
+  | PropertyIsMissing Label
+  | AdditionalProperty Label
   | TypeSynonymInstance
   | OrphanInstance Ident (Qualified (ProperName 'ClassName)) [Type]
   | InvalidNewtype (ProperName 'TypeName)
@@ -107,10 +110,10 @@ data SimpleErrorMessage
   | TransitiveExportError DeclarationRef [DeclarationRef]
   | TransitiveDctorExportError DeclarationRef (ProperName 'ConstructorName)
   | ShadowedName Ident
-  | ShadowedTypeVar String
-  | UnusedTypeVar String
+  | ShadowedTypeVar Text
+  | UnusedTypeVar Text
   | WildcardInferredType Type Context
-  | HoleInferredType String Type Context TypeSearch
+  | HoleInferredType Text Type Context TypeSearch
   | MissingTypeDeclaration Ident Type
   | OverlappingPattern [[Binder]] Bool
   | IncompleteExhaustivityCheck
@@ -124,7 +127,7 @@ data SimpleErrorMessage
   | DuplicateImport ModuleName ImportDeclarationType (Maybe ModuleName)
   | DuplicateImportRef Name
   | DuplicateExportRef Name
-  | IntOutOfRange Integer String Integer Integer
+  | IntOutOfRange Integer Text Integer Integer
   | ImplicitQualifiedImport ModuleName ModuleName [DeclarationRef]
   | ImplicitImport ModuleName [DeclarationRef]
   | HidingImport ModuleName [DeclarationRef]
@@ -145,7 +148,7 @@ data ErrorMessageHint
   | ErrorInModule ModuleName
   | ErrorInInstance (Qualified (ProperName 'ClassName)) [Type]
   | ErrorInSubsumption Type Type
-  | ErrorCheckingAccessor Expr String
+  | ErrorCheckingAccessor Expr PSString
   | ErrorCheckingType Expr Type
   | ErrorCheckingKind Type
   | ErrorCheckingGuard
@@ -240,6 +243,10 @@ data DeclarationRef
   --
   | ModuleRef ModuleName
   -- |
+  -- A named kind
+  --
+  | KindRef (ProperName 'KindName)
+  -- |
   -- A value re-exported from another module. These will be inserted during
   -- elaboration in name desugaring.
   --
@@ -258,6 +265,7 @@ instance Eq DeclarationRef where
   (TypeClassRef name) == (TypeClassRef name') = name == name'
   (TypeInstanceRef name) == (TypeInstanceRef name') = name == name'
   (ModuleRef name) == (ModuleRef name') = name == name'
+  (KindRef name) == (KindRef name') = name == name'
   (ReExportRef mn ref) == (ReExportRef mn' ref') = mn == mn' && ref == ref'
   (PositionedDeclarationRef _ _ r) == r' = r == r'
   r == (PositionedDeclarationRef _ _ r') = r == r'
@@ -274,6 +282,7 @@ compDecRef (ValueOpRef name) (ValueOpRef name') = compare name name'
 compDecRef (TypeClassRef name) (TypeClassRef name') = compare name name'
 compDecRef (TypeInstanceRef ident) (TypeInstanceRef ident') = compare ident ident'
 compDecRef (ModuleRef name) (ModuleRef name') = compare name name'
+compDecRef (KindRef name) (KindRef name') = compare name name'
 compDecRef (ReExportRef name _) (ReExportRef name' _) = compare name name'
 compDecRef (PositionedDeclarationRef _ _ ref) ref' = compDecRef ref ref'
 compDecRef ref (PositionedDeclarationRef _ _ ref') = compDecRef ref ref'
@@ -286,7 +295,8 @@ compDecRef ref ref' = compare
       orderOf (TypeRef _ _) = 2
       orderOf (ValueRef _) = 3
       orderOf (ValueOpRef _) = 4
-      orderOf _ = 5
+      orderOf (KindRef _) = 5
+      orderOf _ = 6
 
 getTypeRef :: DeclarationRef -> Maybe (ProperName 'TypeName, Maybe [ProperName 'ConstructorName])
 getTypeRef (TypeRef name dctors) = Just (name, dctors)
@@ -312,6 +322,11 @@ getTypeClassRef :: DeclarationRef -> Maybe (ProperName 'ClassName)
 getTypeClassRef (TypeClassRef name) = Just name
 getTypeClassRef (PositionedDeclarationRef _ _ r) = getTypeClassRef r
 getTypeClassRef _ = Nothing
+
+getKindRef :: DeclarationRef -> Maybe (ProperName 'KindName)
+getKindRef (KindRef name) = Just name
+getKindRef (PositionedDeclarationRef _ _ r) = getKindRef r
+getKindRef _ = Nothing
 
 isModuleRef :: DeclarationRef -> Bool
 isModuleRef (PositionedDeclarationRef _ _ r) = isModuleRef r
@@ -351,7 +366,7 @@ data Declaration
   -- |
   -- A data type declaration (data or newtype, name, arguments, data constructors)
   --
-  = DataDeclaration DataDeclType (ProperName 'TypeName) [(String, Maybe Kind)] [(ProperName 'ConstructorName, [Type])]
+  = DataDeclaration DataDeclType (ProperName 'TypeName) [(Text, Maybe Kind)] [(ProperName 'ConstructorName, [Type])]
   -- |
   -- A minimal mutually recursive set of data type declarations
   --
@@ -359,7 +374,7 @@ data Declaration
   -- |
   -- A type synonym declaration (name, arguments, type)
   --
-  | TypeSynonymDeclaration (ProperName 'TypeName) [(String, Maybe Kind)] Type
+  | TypeSynonymDeclaration (ProperName 'TypeName) [(Text, Maybe Kind)] Type
   -- |
   -- A type declaration for a value (name, ty)
   --
@@ -381,6 +396,10 @@ data Declaration
   --
   | ExternDataDeclaration (ProperName 'TypeName) Kind
   -- |
+  -- A foreign kind import (name)
+  --
+  | ExternKindDeclaration (ProperName 'KindName)
+  -- |
   -- A fixity declaration
   --
   | FixityDeclaration (Either ValueFixity TypeFixity)
@@ -391,7 +410,7 @@ data Declaration
   -- |
   -- A type class declaration (name, argument, implies, member declarations)
   --
-  | TypeClassDeclaration (ProperName 'ClassName) [(String, Maybe Kind)] [Constraint] [FunctionalDependency] [Declaration]
+  | TypeClassDeclaration (ProperName 'ClassName) [(Text, Maybe Kind)] [Constraint] [FunctionalDependency] [Declaration]
   -- |
   -- A type instance declaration (name, dependencies, class name, instance types, member
   -- declarations)
@@ -468,6 +487,14 @@ isExternDataDecl :: Declaration -> Bool
 isExternDataDecl ExternDataDeclaration{} = True
 isExternDataDecl (PositionedDeclaration _ _ d) = isExternDataDecl d
 isExternDataDecl _ = False
+
+-- |
+-- Test if a declaration is a foreign kind import
+--
+isExternKindDecl :: Declaration -> Bool
+isExternKindDecl ExternKindDeclaration{} = True
+isExternKindDecl (PositionedDeclaration _ _ d) = isExternKindDecl d
+isExternKindDecl _ = False
 
 -- |
 -- Test if a declaration is a fixity declaration
@@ -549,11 +576,11 @@ data Expr
   -- Anonymous arguments will be removed during desugaring and expanded
   -- into a lambda that reads a property from a record.
   --
-  | Accessor String Expr
+  | Accessor PSString Expr
   -- |
   -- Partial record update
   --
-  | ObjectUpdate Expr [(String, Expr)]
+  | ObjectUpdate Expr [(PSString, Expr)]
   -- |
   -- Function introduction
   --
@@ -626,7 +653,7 @@ data Expr
   -- |
   -- A typed hole that will be turned into a hint/error duing typechecking
   --
-  | Hole String
+  | Hole Text
   -- |
   -- A value with source position information
   --

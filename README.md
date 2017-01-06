@@ -5,7 +5,6 @@ PureScript is a small strongly typed programming language with expressive types 
 This fork is a PureScript backend targetting Erlang source. The [purerl](https://github.com/purerl) organisation hosts ports of some core libraries.
 
 To use it:
-
 ```
 pserlc 'bower_components/*/src/**/*.purs' 'src/**/*.purs'
 erlc -o ebin/ output/*/*.erl

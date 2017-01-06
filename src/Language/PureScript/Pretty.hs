@@ -15,4 +15,5 @@ import Language.PureScript.Pretty.JS as P
 import Language.PureScript.Pretty.Kinds as P
 import Language.PureScript.Pretty.Types as P
 import Language.PureScript.Pretty.Values as P
+import Language.PureScript.PSString as P (prettyPrintString)
 import Language.PureScript.Pretty.Erl as P

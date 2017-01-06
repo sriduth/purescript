@@ -25,6 +25,8 @@ import Data.List (minimumBy, nub)
 import Data.Maybe (fromMaybe, maybeToList, mapMaybe)
 import qualified Data.Map as M
 import qualified Data.Set as S
+import qualified Data.Text as T
+import Data.Text (Text)
 
 import Language.PureScript.AST
 import Language.PureScript.Crash
@@ -35,14 +37,20 @@ import Language.PureScript.TypeChecker.Monad
 import Language.PureScript.TypeChecker.Unify
 import Language.PureScript.TypeClassDictionaries
 import Language.PureScript.Types
+import Language.PureScript.Label (Label(..))
+import Language.PureScript.PSString (PSString, mkString)
 import qualified Language.PureScript.Constants as C
 
 -- | Describes what sort of dictionary to generate for type class instances
 data Evidence
   = NamedInstance (Qualified Ident)
   -- ^ An existing named instance
-  | IsSymbolInstance String
+  | IsSymbolInstance PSString
   -- ^ Computed instance of the IsSymbol type class for a given Symbol literal
+  | CompareSymbolInstance
+  -- ^ Computed instance of CompareSymbol
+  | AppendSymbolInstance
+  -- ^ Computed instance of AppendSymbol
   deriving (Eq)
 
 -- | Extract the identifier of a named instance
@@ -62,7 +70,7 @@ type InstanceContext = M.Map (Maybe ModuleName)
 --
 -- Note: we store many types per type variable name. For any name, all types
 -- should unify if we are going to commit to an instance.
-type Matching a = M.Map String a
+type Matching a = M.Map Text a
 
 combineContexts :: InstanceContext -> InstanceContext -> InstanceContext
 combineContexts = M.unionWith (M.unionWith M.union)
@@ -136,7 +144,18 @@ entails SolverOptions{..} constraint context hints =
     solve constraint
   where
     forClassName :: InstanceContext -> Qualified (ProperName 'ClassName) -> [Type] -> [TypeClassDict]
-    forClassName _ C.IsSymbol [TypeLevelString sym] = [TypeClassDictionaryInScope (IsSymbolInstance sym) [] C.IsSymbol [TypeLevelString sym] Nothing]
+    forClassName _ C.IsSymbol [TypeLevelString sym] =
+      [TypeClassDictionaryInScope (IsSymbolInstance sym) [] C.IsSymbol [TypeLevelString sym] Nothing]
+    forClassName _ C.CompareSymbol [arg0@(TypeLevelString lhs), arg1@(TypeLevelString rhs), _] =
+      let ordering = case compare lhs rhs of
+                  LT -> C.orderingLT
+                  EQ -> C.orderingEQ
+                  GT -> C.orderingGT
+          args = [arg0, arg1, TypeConstructor ordering]
+      in [TypeClassDictionaryInScope CompareSymbolInstance [] C.CompareSymbol args Nothing]
+    forClassName _ C.AppendSymbol [arg0@(TypeLevelString lhs), arg1@(TypeLevelString rhs), _] =
+      let args = [arg0, arg1, TypeLevelString (lhs <> rhs)]
+      in [TypeClassDictionaryInScope AppendSymbolInstance [] C.AppendSymbol args Nothing]
     forClassName ctx cn@(Qualified (Just mn) _) tys = concatMap (findDicts ctx cn) (nub (Nothing : Just mn : map Just (mapMaybe ctorModules tys)))
     forClassName _ _ _ = internalError "forClassName: expected qualified class name"
 
@@ -144,6 +163,7 @@ entails SolverOptions{..} constraint context hints =
     ctorModules (TypeConstructor (Qualified (Just mn) _)) = Just mn
     ctorModules (TypeConstructor (Qualified Nothing _)) = internalError "ctorModules: unqualified type name"
     ctorModules (TypeApp ty _) = ctorModules ty
+    ctorModules (KindedType ty _) = ctorModules ty
     ctorModules _ = Nothing
 
     findDicts :: InstanceContext -> Qualified (ProperName 'ClassName) -> Maybe ModuleName -> [TypeClassDict]
@@ -202,7 +222,7 @@ entails SolverOptions{..} constraint context hints =
                 return match
               Unsolved unsolved -> do
                 -- Generate a fresh name for the unsolved constraint's new dictionary
-                ident <- freshIdent ("dict" ++ runProperName (disqualify (constraintClass unsolved)))
+                ident <- freshIdent ("dict" <> runProperName (disqualify (constraintClass unsolved)))
                 let qident = Qualified Nothing ident
                 -- Store the new dictionary in the InstanceContext so that we can solve this goal in
                 -- future.
@@ -264,6 +284,7 @@ entails SolverOptions{..} constraint context hints =
 
             canBeGeneralized :: Type -> Bool
             canBeGeneralized TUnknown{} = True
+            canBeGeneralized (KindedType t _) = canBeGeneralized t
             canBeGeneralized _ = False
 
             -- |
@@ -289,14 +310,18 @@ entails SolverOptions{..} constraint context hints =
             -- Make a dictionary from subgoal dictionaries by applying the correct function
             mkDictionary :: Evidence -> Maybe [Expr] -> Expr
             mkDictionary (NamedInstance n) args = foldl App (Var n) (fold args)
-            mkDictionary (IsSymbolInstance sym) _ = TypeClassDictionaryConstructorApp C.IsSymbol (Literal (ObjectLiteral fields)) where
-              fields = [ ("reflectSymbol", Abs (Left (Ident C.__unused)) (Literal (StringLiteral sym)))
-                       ]
+            mkDictionary (IsSymbolInstance sym) _ =
+              let fields = [ ("reflectSymbol", Abs (Left (Ident C.__unused)) (Literal (StringLiteral sym))) ] in
+              TypeClassDictionaryConstructorApp C.IsSymbol (Literal (ObjectLiteral fields))
+            mkDictionary CompareSymbolInstance _ =
+              TypeClassDictionaryConstructorApp C.CompareSymbol (Literal (ObjectLiteral []))
+            mkDictionary AppendSymbolInstance _ =
+              TypeClassDictionaryConstructorApp C.AppendSymbol (Literal (ObjectLiteral []))
 
         -- Turn a DictionaryValue into a Expr
         subclassDictionaryValue :: Expr -> Qualified (ProperName a) -> Integer -> Expr
         subclassDictionaryValue dict superclassName index =
-          App (Accessor (C.__superclass_ ++ showQualified runProperName superclassName ++ "_" ++ show index)
+          App (Accessor (mkString (C.__superclass_ <> showQualified runProperName superclassName <> "_" <> T.pack (show index)))
                         dict)
               valUndefined
 
@@ -344,6 +369,8 @@ matches deps TypeClassDictionaryInScope{..} tys = do
     -- and return a substitution from type variables to types which makes the type heads unify.
     --
     typeHeadsAreEqual :: Type -> Type -> (Bool, Matching [Type])
+    typeHeadsAreEqual (KindedType t1 _)    t2                              = typeHeadsAreEqual t1 t2
+    typeHeadsAreEqual t1                   (KindedType t2 _)               = typeHeadsAreEqual t1 t2
     typeHeadsAreEqual (TUnknown u1)        (TUnknown u2)        | u1 == u2 = (True, M.empty)
     typeHeadsAreEqual (Skolem _ s1 _ _)    (Skolem _ s2 _ _)    | s1 == s2 = (True, M.empty)
     typeHeadsAreEqual t                    (TypeVar v)                     = (True, M.singleton v [t])
@@ -362,7 +389,9 @@ matches deps TypeClassDictionaryInScope{..} tys = do
         sd1 = [ (name, t1) | (name, t1) <- s1, name `notElem` map fst s2 ]
         sd2 = [ (name, t2) | (name, t2) <- s2, name `notElem` map fst s1 ]
 
-        go :: [(String, Type)] -> Type -> [(String, Type)] -> Type -> (Bool, Matching [Type])
+        go :: [(Label, Type)] -> Type -> [(Label, Type)] -> Type -> (Bool, Matching [Type])
+        go l  (KindedType t1 _)  r  t2                 = go l t1 r t2
+        go l  t1                 r  (KindedType t2 _)  = go l t1 r t2
         go [] REmpty             [] REmpty             = (True, M.empty)
         go [] (TUnknown u1)      [] (TUnknown u2)      | u1 == u2 = (True, M.empty)
         go [] (TypeVar v1)       [] (TypeVar v2)       | v1 == v2 = (True, M.empty)
@@ -384,6 +413,8 @@ matches deps TypeClassDictionaryInScope{..} tys = do
       -- which was _not_ solved, i.e. one which was inferred by a functional
       -- dependency.
       typesAreEqual :: Type -> Type -> Bool
+      typesAreEqual (KindedType t1 _)    t2                   = typesAreEqual t1 t2
+      typesAreEqual t1                   (KindedType t2 _)    = typesAreEqual t1 t2
       typesAreEqual (TUnknown u1)        (TUnknown u2)        | u1 == u2 = True
       typesAreEqual (Skolem _ s1 _ _)    (Skolem _ s2 _ _)    = s1 == s2
       typesAreEqual (TypeVar v1)         (TypeVar v2)         = v1 == v2
@@ -400,7 +431,9 @@ matches deps TypeClassDictionaryInScope{..} tys = do
               sd2 = [ (name, t2) | (name, t2) <- s2, name `notElem` map fst s1 ]
           in all (uncurry typesAreEqual) int && go sd1 r1' sd2 r2'
         where
-          go :: [(String, Type)] -> Type -> [(String, Type)] -> Type -> Bool
+          go :: [(Label, Type)] -> Type -> [(Label, Type)] -> Type -> Bool
+          go l  (KindedType t1 _) r  t2                = go l t1 r t2
+          go l  t1                r  (KindedType t2 _) = go l t1 r t2
           go [] (TUnknown u1)     [] (TUnknown u2)     | u1 == u2 = True
           go [] (Skolem _ s1 _ _) [] (Skolem _ s2 _ _) = s1 == s2
           go [] REmpty            [] REmpty            = True
@@ -430,7 +463,7 @@ newDictionaries path name (Constraint className instanceTy _) = do
                                   ) typeClassSuperclasses [0..]
     return (TypeClassDictionaryInScope name path className instanceTy Nothing : supDicts)
   where
-    instantiateSuperclass :: [String] -> [Type] -> [Type] -> [Type]
+    instantiateSuperclass :: [Text] -> [Type] -> [Type] -> [Type]
     instantiateSuperclass args supArgs tys = map (replaceAllTypeVars (zip args tys)) supArgs
 
 mkContext :: [NamedDict] -> InstanceContext
