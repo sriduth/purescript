@@ -12,9 +12,13 @@ import Language.PureScript.Crash
 import Language.PureScript.CodeGen.Erl.AST
 import Language.PureScript.CodeGen.Erl.Common
 import Language.PureScript.Pretty.Common hiding (withIndent)
+import Language.PureScript.PSString
 
 import Data.Monoid
-
+import Data.Text (Text)
+import Data.Word (Word16)
+import Numeric
+import qualified Data.Text as T
 import Data.Maybe (fromMaybe)
 
 withIndent :: StateT PrinterState Maybe gen -> StateT PrinterState Maybe gen
@@ -25,11 +29,9 @@ literals = mkPattern' match
   where
 
   match :: (Emit gen) => Erl -> StateT PrinterState Maybe gen
-  match (ENumericLiteral n) = return $ emit $ either show show n
-  match (EStringLiteral s) = return $ emit $ "\"" <> concatMap replaceChar s <> "\""
-    where replaceChar '"' = "\\\""
-          replaceChar c   = escapeChar c
-  match (ECharLiteral c) = return $ emit $ "$" <> escapeChar c
+  match (ENumericLiteral n) = return $ emit $ T.pack $ either show show n
+  match (EStringLiteral s) = return $ emit $ prettyPrintStringErl s
+  match (ECharLiteral c) = return $ emit $ "$" <> encodeChar (fromChar c)
   match (EAtomLiteral a) = return $ emit $ runAtom a
   match (ETupleLiteral es) = do
     es' <- mapM prettyPrintErl' es
@@ -78,10 +80,10 @@ literals = mkPattern' match
     mconcat <$> sequence
       [ return $ emit "\n"
       , currentIndent
-      , return $ emit $ "% " ++ s ++ "\n"
+      , return $ emit $ "% " <> s <> "\n"
       ]
 
-  match (EFunRef x n) = return $ emit $ "fun " <> runAtom x <> "/" <> show n
+  match (EFunRef x n) = return $ emit $ "fun " <> runAtom x <> "/" <> T.pack (show n)
   match (EFun name x e) = mconcat <$> sequence
     [ return $ emit $ "fun " <> fromMaybe "" name <> "(" <> x <> ") ->\n"
     , withIndent $ matchBody e
@@ -141,6 +143,10 @@ literals = mkPattern' match
 
   match _ = mzero
 
+
+fromChar :: Char -> Word16
+fromChar = toEnum . fromEnum
+
 prettyPrintBlockBody :: (Emit gen) => [Erl] -> StateT PrinterState Maybe gen
 prettyPrintBlockBody es = do
   es' <- mapM prettyPrintErl' es
@@ -148,17 +154,31 @@ prettyPrintBlockBody es = do
   let lns = intercalate (emit ",\n" <> indentStr) es'
   pure $ indentStr <> lns
 
-escapeChar :: Char -> String
-escapeChar '\\' = "\\\\"
-escapeChar '\b' = "\\b"
-escapeChar '\f' = "\\f"
-escapeChar '\n' = "\\n"
-escapeChar '\r' = "\\r"
-escapeChar '\t' = "\\t"
-escapeChar '\v' = "\\v"
-escapeChar '\0' = "\\0"
-escapeChar '\a' = "\\7"
-escapeChar c    = [c]
+-- |
+-- Pretty print a PSString, using Erlang escape sequences. Intended for
+-- use in compiled Erlang output.
+--
+prettyPrintStringErl :: PSString -> Text
+prettyPrintStringErl s = "\"" <> foldMap encodeChar (toUTF16CodeUnits s) <> "\""
+
+encodeChar :: Word16 -> Text
+encodeChar c | c > 0xFF = "\\x{" <> T.pack (showHex (fromEnum c) "") <> "}"
+encodeChar c | c > 0x7E || c < 0x20 =
+  let hs = showHex (fromEnum c) ""
+      x = T.pack (replicate (2 - length hs) '0' <> hs)
+  in "\\x" <> x
+encodeChar c | toChar c == '\b' = "\\b"
+encodeChar c | toChar c == '\t' = "\\t"
+encodeChar c | toChar c == '\n' = "\\n"
+encodeChar c | toChar c == '\v' = "\\v"
+encodeChar c | toChar c == '\f' = "\\f"
+encodeChar c | toChar c == '\r' = "\\r"
+encodeChar c | toChar c == '"'  = "\\\""
+encodeChar c | toChar c == '\\' = "\\\\"
+encodeChar c = T.singleton $ toChar c
+
+toChar :: Word16 -> Char
+toChar = toEnum . fromIntegral
 
 app :: (Emit gen) => Pattern PrinterState Erl (gen, Erl)
 app = mkPattern' match
@@ -168,8 +188,8 @@ app = mkPattern' match
     return (intercalate (emit ", ") jss, val)
   match _ = mzero
 
-binary :: (Emit gen) => BinaryOperator -> String -> Operator PrinterState Erl gen
-binary op str = AssocL match (\v1 v2 -> v1 <> emit (" " ++ str ++ " ") <> v2)
+binary :: (Emit gen) => BinaryOperator -> Text -> Operator PrinterState Erl gen
+binary op str = AssocL match (\v1 v2 -> v1 <> emit (" " <> str <> " ") <> v2)
   where
   match :: Pattern PrinterState Erl (Erl, Erl)
   match = mkPattern match'
@@ -178,7 +198,7 @@ binary op str = AssocL match (\v1 v2 -> v1 <> emit (" " ++ str ++ " ") <> v2)
     match' _ = Nothing
 
 
-unary' :: (Emit gen) => UnaryOperator -> (Erl -> String) -> Operator PrinterState Erl gen
+unary' :: (Emit gen) => UnaryOperator -> (Erl -> Text) -> Operator PrinterState Erl gen
 unary' op mkStr = Wrap match (<>)
   where
   match :: (Emit gen) => Pattern PrinterState Erl (gen, Erl)
@@ -187,10 +207,10 @@ unary' op mkStr = Wrap match (<>)
     match' (EUnary op' val) | op' == op = Just (emit $ mkStr val, val)
     match' _ = Nothing
 
-unary :: (Emit gen) => UnaryOperator -> String -> Operator PrinterState Erl gen
+unary :: (Emit gen) => UnaryOperator -> Text -> Operator PrinterState Erl gen
 unary op str = unary' op (const str)
 
-prettyPrintErl :: [Erl] -> String
+prettyPrintErl :: [Erl] -> Text
 prettyPrintErl = maybe (internalError "Incomplete pattern") runPlainString . flip evalStateT (PrinterState 0) . prettyStatements
 
 

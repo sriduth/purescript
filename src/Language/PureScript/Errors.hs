@@ -474,10 +474,10 @@ prettyPrintSingleError (PPEOptions codeColor full level showDocs) e = flip evalS
                 ]
             ]
     renderSimpleErrorMessage (InvalidFFIArity mn ident m n) =
-      paras [ line $ "In the FFI module for " ++ markCode (runModuleName mn) ++ ":"
+      paras [ line $ "In the FFI module for " <> markCode (runModuleName mn) <> ":"
             , indent . paras $
-                [ line $ "The identifier " ++ markCode ident ++ " was exported with (uncurried) arity " ++ show m
-                ++ " but imported with (curried) arity " ++ show n ++ ". Export must have less than or equal arity."
+                [ line $ "The identifier " <> markCode ident <> " was exported with (uncurried) arity " <> T.pack (show m)
+                <> " but imported with (curried) arity " <> T.pack (show n) <> ". Export must have less than or equal arity."
                 ]
             ]
 

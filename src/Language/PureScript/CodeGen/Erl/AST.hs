@@ -5,11 +5,14 @@
 --
 module Language.PureScript.CodeGen.Erl.AST where
 
-import Prelude ()
 import Prelude.Compat
+
+import Data.Text (Text)
 
 import Control.Monad.Identity
 import Control.Arrow (second)
+
+import Language.PureScript.PSString (PSString)
 
 -- -- |
 -- -- Data type for simplified Javascript expressions
@@ -22,7 +25,7 @@ data Erl
   -- |
   -- A string literal
   --
-  | EStringLiteral String
+  | EStringLiteral PSString
   -- |
   -- A char literal
   --
@@ -44,15 +47,15 @@ data Erl
   -- |
   -- Top-level function definition (over-simplified)
   --
-  | EFunctionDef Atom [String] Erl
+  | EFunctionDef Atom [Text] Erl
 
   -- TODO not really a separate form. and misused
-  | EVarBind String Erl
+  | EVarBind Text Erl
 
   -- |
   -- A variable
   --
-  | EVar String
+  | EVar Text
 
   -- |
   -- A function reference f/1
@@ -64,9 +67,9 @@ data Erl
   -- |
   -- A fun definition
   --
-  | EFun (Maybe String) String Erl
+  | EFun (Maybe Text) Text Erl
 
-  | EFunFull (Maybe String) [(EFunBinder, Erl)]
+  | EFunFull (Maybe Text) [(EFunBinder, Erl)]
 
   -- |
   -- Function application
@@ -83,7 +86,7 @@ data Erl
   --
   | ETupleLiteral [Erl]
 
-  | EComment String
+  | EComment Text
 
   | EMapLiteral [(Atom, Erl)]
 
@@ -95,12 +98,12 @@ data Erl
 
   | EArrayLiteral [Erl]
 
-  deriving (Show, Read, Eq)
+  deriving (Show, Eq)
 
 data EFunBinder
  = EFunBinder [Erl] (Maybe Guard)
 
-   deriving (Show, Read, Eq)
+   deriving (Show, Eq)
 
 data EBinder
   = EBinder Erl -- TODO split out literals?
@@ -108,15 +111,18 @@ data EBinder
   | EGuardedBinder Erl Guard
   -- | EVarBinder String
 
-  deriving (Show, Read, Eq)
+  deriving (Show, Eq)
 
 data Guard
   = Guard Erl
-  deriving (Show, Read, Eq)
+  deriving (Show, Eq)
 
 -- \ Possibly qualified atom
 -- | TODO : This is not really an atom, each part is an atom.
-data Atom = Atom (Maybe String) String deriving (Show, Eq, Read)
+data Atom
+  = Atom (Maybe Text) Text
+  | AtomPS (Maybe Text) PSString
+  deriving (Show, Eq)
 -- |
 -- Built-in unary operators
 --
@@ -137,7 +143,7 @@ data UnaryOperator
   -- Numeric unary \'plus\'
   --
   | Positive
-  deriving (Show, Read, Eq)
+  deriving (Show, Eq)
 
 -- |
 -- Built-in binary operators
@@ -247,7 +253,7 @@ data BinaryOperator
   -- -- Bitwise right shift with zero-fill
   -- --
   -- | ZeroFillShiftRight
-  deriving (Show, Read, Eq)
+  deriving (Show, Eq)
 
 everywhereOnErl :: (Erl -> Erl) -> Erl -> Erl
 everywhereOnErl f = go

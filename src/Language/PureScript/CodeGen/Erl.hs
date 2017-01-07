@@ -13,9 +13,11 @@ import Prelude.Compat
 
 import Language.PureScript.CodeGen.Erl.AST as AST
 
+import qualified Data.Text as T
 import Data.Traversable
 import Data.Foldable
-import Data.List (intercalate, nub)
+import Data.Monoid
+import Data.List (nub)
 import Data.Maybe (fromMaybe)
 import Control.Monad.Error.Class (MonadError(..))
 
@@ -33,25 +35,21 @@ import Language.PureScript.Environment as E
 import qualified Language.PureScript.Constants as C
 import Language.PureScript.Traversals (sndM)
 
-import qualified Data.Traversable as T
-
 import Language.PureScript.CodeGen.Erl.Common
 import Language.PureScript.CodeGen.Erl.Optimizer
 
-freshNameErl :: (MonadSupply m) => m String
-freshNameErl = fmap (("_@" ++) . show) fresh
+freshNameErl :: (MonadSupply m) => m T.Text
+freshNameErl = fmap (("_@" <>) . T.pack . show) fresh
 
 moduleExports :: forall m .
     (Monad m, MonadReader Options m, MonadSupply m, MonadError MultipleErrors m)
   => Module Ann
-  -> [(String, Int)]
-  -> m String
+  -> [(T.Text, Int)]
+  -> m T.Text
 moduleExports (Module _ _ _ exps _ _) _ = do
   -- TODO nub temporary
-  let exps' = nub $ map ((++ "/0") . runAtom . Atom Nothing . runIdent) exps
-  pure $ "-export([" ++ intercalate ", " exps' ++ "])."
-
-  where
+  let exps' = nub $ map ((<> "/0") . runAtom . Atom Nothing . runIdent) exps
+  pure $ "-export([" <> T.intercalate ", " exps' <> "])."
     -- TODO must export actual dctor fn
 
 identToTypeclassCtor :: Ident -> Atom
@@ -72,12 +70,12 @@ isTopLevelBinding (Qualified Nothing _) = False
 moduleToErl :: forall m .
     (Monad m, MonadReader Options m, MonadSupply m, MonadError MultipleErrors m)
   => Module Ann
-  -> [(String, Int)]
+  -> [(T.Text, Int)]
   -> m [Erl]
 moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
   rethrow (addHint (ErrorInModule mn)) $ do
     erlDecls <- mapM topBindToErl decls
-    optimized <- T.traverse (T.traverse optimize) erlDecls
+    optimized <- traverse (traverse optimize) erlDecls
     traverse_ checkExport foreigns
     return $ map reExportForeign foreigns ++ concat optimized
   where
@@ -85,7 +83,7 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
   reExportForeign :: (Ident, Type) -> Erl
   reExportForeign (ident, _) = --    | isFnTy ty =
       let arity = exportArity ident
-          args = map (\m -> "X" ++ show m) [ 1..arity ]
+          args = map (\m -> "X" <> T.pack (show m)) [ 1..arity ]
           body = EApp (EAtomLiteral $ qualifiedToErl' mn True ident) (map EVar args)
           fun = foldr (\x fun' -> EFun Nothing x fun') body args
       in EFunctionDef (Atom Nothing $ identToAtomName ident) [] fun
@@ -102,6 +100,7 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
         throwError . errorMessage $ MissingFFIImplementations mn [ident]
       _ -> pure ()
 
+  findExport :: T.Text -> Maybe Int
   findExport n = snd <$> find ((n==) . fst) foreignExports
 
   topBindToErl :: Bind Ann -> m [Erl]
@@ -127,7 +126,7 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
     pure $ EVarBind (identToVar ident) erl
 
   qualifiedToErl' mn' isForeign ident =
-    Atom (Just $ atomModuleName mn' ++ (if isForeign then "@foreign" else "")) (runIdent ident)
+    Atom (Just $ atomModuleName mn' <> (if isForeign then "@foreign" else "")) (runIdent ident)
 
   -- Top level definitions are everywhere fully qualified, variables are not.
   qualifiedToErl (Qualified (Just mn') ident) | mn == mn' = Atom Nothing (runIdent ident)
@@ -159,12 +158,12 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
 
   valueToErl' _ (Accessor _ prop val) = do
     eval <- valueToErl val
-    return $ EApp (EAtomLiteral $ Atom (Just "maps") "get") [EAtomLiteral $ Atom Nothing prop, eval]
+    return $ EApp (EAtomLiteral $ Atom (Just "maps") "get") [EAtomLiteral $ AtomPS Nothing prop, eval]
 
   valueToErl' _ (ObjectUpdate _ o ps) = do
     obj <- valueToErl o
     sts <- mapM (sndM valueToErl) ps
-    return $ EMapUpdate obj (map (first (Atom Nothing)) sts)
+    return $ EMapUpdate obj (map (first (AtomPS Nothing)) sts)
 
   valueToErl' _ e@App{} = do
     let (f, args) = unApp e []
@@ -216,7 +215,7 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
     pure $ EApp (EAtomLiteral $ Atom (Just "array") "from_list") [array]
   literalToValueErl' mapLiteral f (ObjectLiteral ps) = do
     pairs <- mapM (sndM f) ps
-    pure $ mapLiteral $ map (first (Atom Nothing)) pairs
+    pure $ mapLiteral $ map (first (AtomPS Nothing)) pairs
 
   boolToAtom :: Bool -> Erl
   boolToAtom True = EAtomLiteral $ Atom Nothing "true"

@@ -2,34 +2,36 @@ module Language.PureScript.Parser.Erl (parseFile) where
 
 import Prelude.Compat
 
+import Data.Text (Text)
+import qualified Data.Text as T
 import qualified Text.Parsec as P
 import Text.Parsec ( (<|>) )
 import qualified Text.Parsec.Char as PC
 
-parseFile :: P.SourceName -> String -> Either P.ParseError [(String, Int)]
+parseFile :: P.SourceName -> Text -> Either P.ParseError [(Text, Int)]
 parseFile = P.parse parseLines
 
-parseLines :: P.Parsec String u [(String, Int)]
+parseLines :: P.Parsec Text u [(Text, Int)]
 parseLines = do
   lns <- P.many parseLine
   P.eof
   pure (concat lns)
 
-parseLine :: P.Parsec String u [(String, Int)]
+parseLine :: P.Parsec Text u [(Text, Int)]
 parseLine = P.try parseAttribute <|>
   do
     P.skipMany (PC.noneOf ['\n', '\r'])
     _ <- P.endOfLine
     pure []
 
-parseAttribute :: P.Parsec String u [(String, Int)]
+parseAttribute :: P.Parsec Text u [(Text, Int)]
 parseAttribute = attributeParser "export"
   (P.between (PC.char '[') (PC.char ']')
     (atomArityParser `P.sepBy` PC.char ','))
 
 -- P.Parsec String u Token
 --
-attributeParser :: String -> P.Parsec String u a -> P.Parsec String u a
+attributeParser :: String -> P.Parsec Text u a -> P.Parsec Text u a
 attributeParser name valueParser =
   -- PC.char '-' *> PC.string name *> P.between (PC.char '(') (PC.char ')') valueParser
   do
@@ -40,7 +42,7 @@ attributeParser name valueParser =
     _ <- PC.endOfLine
     pure res
 
-atomArityParser :: P.Parsec String u (String, Int)
+atomArityParser :: P.Parsec Text u (Text, Int)
 atomArityParser = do
   PC.spaces
   a <- atomParser
@@ -48,20 +50,20 @@ atomArityParser = do
   n <- read <$> P.many1 PC.digit
   pure (a, n)
 
-atomParser :: P.Parsec String u String
+atomParser :: P.Parsec Text u Text
 atomParser = quotedAtomParser <|> identifierParser
 
-identifierParser :: P.Parsec String u String
+identifierParser :: P.Parsec Text u Text
 identifierParser = do
   h <- PC.lower
-  t <- P.many (PC.alphaNum <|> PC.char '_' <|> PC.char '@')
-  pure (h:t)
+  t <- T.pack <$> P.many (PC.alphaNum <|> PC.char '_' <|> PC.char '@')
+  pure $ T.cons h t
 
-quotedAtomParser :: P.Parsec String u String
+quotedAtomParser :: P.Parsec Text u Text
 quotedAtomParser = P.between (PC.char '\'') (PC.char '\'')
-  (P.many1 (PC.noneOf ['\'', '\\'] <|> atomEscapedCharParser))
+  (T.pack <$> P.many1 (PC.noneOf ['\'', '\\'] <|> atomEscapedCharParser))
 
-atomEscapedCharParser :: P.Parsec String u Char
+atomEscapedCharParser :: P.Parsec Text u Char
 atomEscapedCharParser = do
   _ <- PC.char '\\'
   PC.char '\'' <|> PC.char '\\'

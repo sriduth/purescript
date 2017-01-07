@@ -138,7 +138,7 @@ data SimpleErrorMessage
   | CannotGeneralizeRecursiveFunction Ident Type
   | CannotDeriveNewtypeForData (ProperName 'TypeName)
   | ExpectedWildcard (ProperName 'TypeName)
-  | InvalidFFIArity ModuleName String Int Int
+  | InvalidFFIArity ModuleName Text Int Int
   deriving (Show)
 
 -- | Error message hints, providing more detailed information about failure.

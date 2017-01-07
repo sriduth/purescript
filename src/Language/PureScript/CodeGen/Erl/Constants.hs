@@ -1,59 +1,59 @@
 module Language.PureScript.CodeGen.Erl.Constants where
 
-import Prelude.Compat
+import Data.Text (Text)
 
 -- Modules
 
-prim :: String
+prim :: Text
 prim = "prim"
 
-prelude :: String
+prelude :: Text
 prelude = "prelude"
 
-dataArray :: String
+dataArray :: Text
 dataArray = "data_array"
 
-eff :: String
+eff :: Text
 eff = "control_monad_eff"
 
-controlApplicative :: String
+controlApplicative :: Text
 controlApplicative = "control_applicative"
 
-controlSemigroupoid :: String
+controlSemigroupoid :: Text
 controlSemigroupoid = "control_semigroupoid"
 
-controlBind :: String
+controlBind :: Text
 controlBind = "control_bind"
 
-dataBounded :: String
+dataBounded :: Text
 dataBounded = "data_bounded"
 
-dataSemigroup :: String
+dataSemigroup :: Text
 dataSemigroup = "data_semigroup"
 
-dataHeytingAlgebra :: String
+dataHeytingAlgebra :: Text
 dataHeytingAlgebra = "data_heytingAlgebra"
 
-dataEq :: String
+dataEq :: Text
 dataEq = "data_eq"
 
-dataOrd :: String
+dataOrd :: Text
 dataOrd = "data_ord"
 
-dataSemiring :: String
+dataSemiring :: Text
 dataSemiring = "data_semiring"
 
-dataRing :: String
+dataRing :: Text
 dataRing = "data_ring"
 
-dataEuclideanRing :: String
+dataEuclideanRing :: Text
 dataEuclideanRing = "data_euclideanRing"
 
-dataFunction :: String
+dataFunction :: Text
 dataFunction = "data_function"
 
-dataFunctionUncurried :: String
+dataFunctionUncurried :: Text
 dataFunctionUncurried = "data_function_uncurried"
 
-dataIntBits :: String
+dataIntBits :: Text
 dataIntBits = "data_int_bits"
