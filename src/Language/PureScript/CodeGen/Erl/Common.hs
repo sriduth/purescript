@@ -1,7 +1,17 @@
 -- |
 -- Common code generation utility functions
 --
-module Language.PureScript.CodeGen.Erl.Common where
+module Language.PureScript.CodeGen.Erl.Common
+( runAtom
+, atomPS
+, atom
+, atomModuleName
+, toAtomName
+, toVarName
+, identToAtomName
+, identToVar
+, nameIsErlReserved
+) where
 
 import Prelude.Compat hiding (concatMap, all)
 
@@ -37,36 +47,25 @@ atomPS a = atom $ foldMap encodeChar (toUTF16CodeUnits a)
     encodeChar c | toChar c == '\r' = "\\r"
     encodeChar c = singleton $ toChar c
 
-    toChar :: Word16 -> Char
-    toChar = toEnum . fromIntegral
+toChar :: Word16 -> Char
+toChar = toEnum . fromIntegral
 
-    hex :: (Enum a) => Int -> a -> Text
-    hex width c =
-      let hs = showHex (fromEnum c) "" in
-      pack (replicate (width - length hs) '0' <> hs)
+hex :: (Enum a) => Int -> a -> Text
+hex width c =
+  let hs = showHex (fromEnum c) "" in
+  pack (replicate (width - length hs) '0' <> hs)
 
--- prettyPrintStringJS :: PSString -> Text
--- prettyPrintStringJS s = "\"" <> foldMap encodeChar (toUTF16CodeUnits s) <> "\""
---   where
---   encodeChar :: Word16 -> Text
---   encodeChar c | c > 0xFF = "\\u" <> hex 4 c
---   encodeChar c | c > 0x7E || c < 0x20 = "\\x" <> hex 2 c
---   encodeChar c | toChar c == '\b' = "\\b"
---   encodeChar c | toChar c == '\t' = "\\t"
---   encodeChar c | toChar c == '\n' = "\\n"
---   encodeChar c | toChar c == '\v' = "\\v"
---   encodeChar c | toChar c == '\f' = "\\f"
---   encodeChar c | toChar c == '\r' = "\\r"
---   encodeChar c | toChar c == '"'  = "\\\""
---   encodeChar c | toChar c == '\\' = "\\\\"
---   encodeChar c = T.singleton $ toChar c
-
+-- Atoms:
+-- Must consist entirely of valid Latin-1 characters
+-- Unquoted: must start with lower case char and be alpha-numeric, @ or _
+-- Quoted: enclosed in single quotes, single quotes must be escaped \'
 atom :: Text -> Text
 atom s
   | isValidAtom s = s
   | otherwise = "'" <> concatMap replaceChar s <> "'"
   where
   replaceChar '\'' = "\\'"
+  replaceChar c | not (isLatin1 c) = "@x" <> hex 4 c
   replaceChar c = singleton c
 
   isValidAtom a = case uncons a of
@@ -75,7 +74,7 @@ atom s
 
   atomChar '_' = True
   atomChar '@' = True
-  atomChar c = isAlpha c && isAscii c
+  atomChar c = isDigit c || (isLatin1 c && isAlpha c)
 
 atomModuleName :: ModuleName -> Text
 atomModuleName (ModuleName pns) = intercalate "_" ((toAtomName . runProperName) `map` pns)
@@ -94,11 +93,12 @@ toVarName v = case uncons v of
     replaceChar '.' = "@_"
     replaceChar '$' = "@dollar"
     replaceChar '\'' = "@prime"
+    replaceChar c | not (isLatin1 c) = "@x" <> hex 4 c
     replaceChar x = singleton x
 
     replaceFirst x
-      | isAlpha x = singleton (toUpper x)
-      | x == '_' = singleton x
+      | isAlpha x && isLatin1 x = singleton (toUpper x)
+      | x == '_' = "_"
       | otherwise = "V@1" <> replaceChar x
 
 identToAtomName :: Ident -> Text
