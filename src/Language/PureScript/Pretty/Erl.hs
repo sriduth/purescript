@@ -159,23 +159,7 @@ prettyPrintBlockBody es = do
 -- use in compiled Erlang output.
 --
 prettyPrintStringErl :: PSString -> Text
-prettyPrintStringErl s = "\"" <> foldMap encodeChar (toUTF16CodeUnits s) <> "\""
-
-encodeChar :: Word16 -> Text
-encodeChar c | c > 0xFF = "\\x{" <> T.pack (showHex (fromEnum c) "") <> "}"
-encodeChar c | c > 0x7E || c < 0x20 =
-  let hs = showHex (fromEnum c) ""
-      x = T.pack (replicate (2 - length hs) '0' <> hs)
-  in "\\x" <> x
-encodeChar c | toChar c == '\b' = "\\b"
-encodeChar c | toChar c == '\t' = "\\t"
-encodeChar c | toChar c == '\n' = "\\n"
-encodeChar c | toChar c == '\v' = "\\v"
-encodeChar c | toChar c == '\f' = "\\f"
-encodeChar c | toChar c == '\r' = "\\r"
-encodeChar c | toChar c == '"'  = "\\\""
-encodeChar c | toChar c == '\\' = "\\\\"
-encodeChar c = T.singleton $ toChar c
+prettyPrintStringErl s = "<<" <> utf8Binary s <> ">>"
 
 toChar :: Word16 -> Char
 toChar = toEnum . fromIntegral

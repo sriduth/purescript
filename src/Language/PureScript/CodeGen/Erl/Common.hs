@@ -11,12 +11,14 @@ module Language.PureScript.CodeGen.Erl.Common
 , identToAtomName
 , identToVar
 , nameIsErlReserved
+, utf8Binary
+, encodeChar
 ) where
 
-import Prelude.Compat hiding (concatMap, all)
-
+import Prelude.Compat hiding (all)
 import Data.Char
-import Data.Text (Text, intercalate, uncons, cons, concatMap, singleton, all, pack, singleton)
+import Data.Text (Text, intercalate, uncons, cons, singleton, all, pack, singleton)
+import qualified Data.Text as T
 import Numeric
 import Data.Word (Word16)
 import Data.Monoid ((<>))
@@ -34,18 +36,23 @@ runAtom at = case at of
 
 -- Atoms do not support codepoints > 255
 atomPS :: PSString -> Text
-atomPS a = atom $ foldMap encodeChar (toUTF16CodeUnits a)
+atomPS a = atom $ foldMap escapeChar (toUTF16CodeUnits a)
   where
-    encodeChar :: Word16 -> Text
-    encodeChar c | c > 0xFF = "@x" <> hex 4 c -- Can't use real unicode escape
-    encodeChar c | c > 0x7E || c < 0x20 = "\\x" <> hex 2 c
-    encodeChar c | toChar c == '\b' = "\\b"
-    encodeChar c | toChar c == '\t' = "\\t"
-    encodeChar c | toChar c == '\n' = "\\n"
-    encodeChar c | toChar c == '\v' = "\\v"
-    encodeChar c | toChar c == '\f' = "\\f"
-    encodeChar c | toChar c == '\r' = "\\r"
-    encodeChar c = singleton $ toChar c
+    escapeChar :: Word16 -> Text
+    escapeChar c | c > 0xFF = "@x" <> hex 4 c -- Can't use real unicode escape
+    escapeChar c | c > 0x7E || c < 0x20 = "\\x" <> hex 2 c
+    escapeChar c = replaceBasicEscape $ toChar c
+
+replaceBasicEscape :: Char -> Text
+replaceBasicEscape '\b' = "\\b"
+replaceBasicEscape '\t' = "\\t"
+replaceBasicEscape '\n' = "\\n"
+replaceBasicEscape '\v' = "\\v"
+replaceBasicEscape '\f' = "\\f"
+replaceBasicEscape '\r' = "\\r"
+replaceBasicEscape '"'  = "\\\""
+replaceBasicEscape '\\' = "\\\\"
+replaceBasicEscape c = singleton c
 
 toChar :: Word16 -> Char
 toChar = toEnum . fromIntegral
@@ -55,6 +62,21 @@ hex width c =
   let hs = showHex (fromEnum c) "" in
   pack (replicate (width - length hs) '0' <> hs)
 
+utf8Binary :: PSString -> Text
+utf8Binary str = "\"" <> T.concat (convertChar <$> decodeStringEither str) <> "\"/utf8"
+  where
+    convertChar :: Either Word16 Char -> Text
+    convertChar (Left _) = "\\x{fffd}"
+    convertChar (Right c) = replaceBasicEscape c
+
+encodeChar :: Word16 -> Text
+-- encodeChar c | c > 0xFF = "\\x{" <> T.pack (showHex (fromEnum c) "") <> "}"
+encodeChar c | c > 0x7E || c < 0x20 =
+  let hs = showHex (fromEnum c) ""
+      x = T.pack (replicate (2 - length hs) '0' <> hs)
+  in "\\x" <> x
+encodeChar c = replaceBasicEscape $ toChar c
+
 -- Atoms:
 -- Must consist entirely of valid Latin-1 characters
 -- Unquoted: must start with lower case char and be alpha-numeric, @ or _
@@ -62,7 +84,7 @@ hex width c =
 atom :: Text -> Text
 atom s
   | isValidAtom s = s
-  | otherwise = "'" <> concatMap replaceChar s <> "'"
+  | otherwise = "'" <> T.concatMap replaceChar s <> "'"
   where
   replaceChar '\'' = "\\'"
   replaceChar c | not (isLatin1 c) = "@x" <> hex 4 c
@@ -87,7 +109,7 @@ toAtomName text = case uncons text of
 toVarName :: Text -> Text
 toVarName v = case uncons v of
   Just (h, t) ->
-    replaceFirst h <> concatMap replaceChar t
+    replaceFirst h <> T.concatMap replaceChar t
   Nothing -> v
   where
     replaceChar '.' = "@_"
