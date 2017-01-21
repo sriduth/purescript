@@ -11,6 +11,8 @@ erlc -o ebin/ output/*/*.erl
 erl -pa ebin -noshell -eval '(main:main())()' -eval 'init:stop()'
 ```
 
+Erlang/OTP 19 supported, subtle & catastrophic bugs have been observed with earlier versions. If you do try with an earlier version minimum 17 is suggested due to character encoding.
+
 # Output
 
 Module names `Foo.Bar` are transformed to a lower-snake cased form `foo_bar` (any non-initial uppercase chars will be preserved as such).
