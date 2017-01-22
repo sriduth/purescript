@@ -56,7 +56,7 @@ identToTypeclassCtor :: Ident -> Atom
 identToTypeclassCtor a = Atom Nothing (runIdent a)
 
 qualifiedToTypeclassCtor :: Qualified Ident -> Atom
-qualifiedToTypeclassCtor (Qualified (Just mn) ident) = Atom (Just $ atomModuleName mn) (runIdent ident)
+qualifiedToTypeclassCtor (Qualified (Just mn) ident) = Atom (Just $ atomModuleName mn PureScriptModule) (runIdent ident)
 qualifiedToTypeclassCtor (Qualified  Nothing ident) = Atom Nothing (runIdent ident)
 
 isTopLevelBinding :: Qualified t -> Bool
@@ -84,7 +84,7 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
   reExportForeign (ident, _) = --    | isFnTy ty =
       let arity = exportArity ident
           args = map (\m -> "X" <> T.pack (show m)) [ 1..arity ]
-          body = EApp (EAtomLiteral $ qualifiedToErl' mn True ident) (map EVar args)
+          body = EApp (EAtomLiteral $ qualifiedToErl' mn ForeignModule ident) (map EVar args)
           fun = foldr (\x fun' -> EFun Nothing x fun') body args
       in EFunctionDef (Atom Nothing $ identToAtomName ident) [] fun
 
@@ -125,12 +125,11 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
     erl <- valueToErl' (Just ident) val
     pure $ EVarBind (identToVar ident) erl
 
-  qualifiedToErl' mn' isForeign ident =
-    Atom (Just $ atomModuleName mn' <> (if isForeign then "@foreign" else "")) (runIdent ident)
+  qualifiedToErl' mn' moduleType ident = Atom (Just $ atomModuleName mn' moduleType) (runIdent ident)
 
   -- Top level definitions are everywhere fully qualified, variables are not.
   qualifiedToErl (Qualified (Just mn') ident) | mn == mn' = Atom Nothing (runIdent ident)
-  qualifiedToErl (Qualified (Just mn') ident) = qualifiedToErl' mn' False ident
+  qualifiedToErl (Qualified (Just mn') ident) = qualifiedToErl' mn' PureScriptModule ident
   qualifiedToErl _ = error "Invalid qualified identifier"
 
   qualifiedToVar (Qualified _ ident) = identToVar ident

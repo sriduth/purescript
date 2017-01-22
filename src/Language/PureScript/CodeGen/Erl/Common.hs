@@ -6,6 +6,7 @@ module Language.PureScript.CodeGen.Erl.Common
 , atomPS
 , atom
 , atomModuleName
+, ModuleType(..)
 , toAtomName
 , toVarName
 , identToAtomName
@@ -19,11 +20,11 @@ import Prelude.Compat hiding (all)
 import Data.Char
 import Data.Text (Text, intercalate, uncons, cons, singleton, all, pack, singleton)
 import qualified Data.Text as T
-import Numeric
 import Data.Word (Word16)
 import Data.Monoid ((<>))
 import Language.PureScript.Names
 import Language.PureScript.PSString
+import Numeric
 
 import Language.PureScript.CodeGen.Erl.AST
 
@@ -98,8 +99,13 @@ atom s
   atomChar '@' = True
   atomChar c = isDigit c || (isLatin1 c && isAlpha c)
 
-atomModuleName :: ModuleName -> Text
-atomModuleName (ModuleName pns) = intercalate "_" ((toAtomName . runProperName) `map` pns)
+data ModuleType = ForeignModule | PureScriptModule
+
+atomModuleName :: ModuleName -> ModuleType -> Text
+atomModuleName (ModuleName pns) moduleType = intercalate "_" ((toAtomName . runProperName) `map` pns) <>
+  case moduleType of
+    ForeignModule -> "@foreign"
+    PureScriptModule -> "@ps"
 
 toAtomName :: Text -> Text
 toAtomName text = case uncons text of
