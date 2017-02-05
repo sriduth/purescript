@@ -85,7 +85,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
     (path, ) <$> readTextFile path
 
   codegen :: CF.Module CF.Ann -> Environment -> Externs -> SupplyT Make ()
-  codegen m _ exts = do
+  codegen m env exts = do
     let mn = CF.moduleName m
     foreignExports <- lift $ case mn `M.lookup` foreigns of
       Just path
@@ -97,7 +97,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
         when (requiresForeign m) $ throwError . errorMessage $ MissingFFIModule mn
         return []
 
-    rawErl <- J.moduleToErl m foreignExports
+    rawErl <- J.moduleToErl env m foreignExports
     let pretty = prettyPrintErl rawErl
     let moduleName = runModuleName mn
         outFile = outputDir </> T.unpack moduleName </> T.unpack (atomModuleName mn PureScriptModule) ++ ".erl"
@@ -109,7 +109,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
           "-compile(nowarn_shadow_vars).",
           "-compile(nowarn_unused_vars)."  -- consider using _ vars
           ]
-    exports <- J.moduleExports m foreignExports
+    exports <- J.moduleExports env m foreignExports
     let erl :: Text = T.unlines $ map ("% " <>) prefix ++ [ module', exports ] ++ directives ++ [ pretty ]
     lift $ do
       writeTextFile outFile $ B.fromStrict $ TE.encodeUtf8 erl

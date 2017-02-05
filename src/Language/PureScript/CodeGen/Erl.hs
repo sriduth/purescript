@@ -18,7 +18,8 @@ import Data.Traversable
 import Data.Foldable
 import Data.Monoid
 import Data.List (nub)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
+import qualified Data.Map as M
 import Control.Monad.Error.Class (MonadError(..))
 
 import Control.Arrow (first)
@@ -38,19 +39,38 @@ import Language.PureScript.Traversals (sndM)
 import Language.PureScript.CodeGen.Erl.Common
 import Language.PureScript.CodeGen.Erl.Optimizer
 
+import Debug.Trace
+
 freshNameErl :: (MonadSupply m) => m T.Text
 freshNameErl = fmap (("_@" <>) . T.pack . show) fresh
 
 moduleExports :: forall m .
     (Monad m, MonadReader Options m, MonadSupply m, MonadError MultipleErrors m)
-  => Module Ann
+  => E.Environment
+  -> Module Ann
   -> [(T.Text, Int)]
   -> m T.Text
-moduleExports (Module _ _ _ exps _ _) _ = do
+moduleExports env (Module _ mn _ exps _ _) _ = do
   -- TODO nub temporary
   let exps' = nub $ map ((<> "/0") . runAtom . Atom Nothing . runIdent) exps
-  pure $ "-export([" <> T.intercalate ", " exps' <> "])."
+  let exps'' = nub $ mapMaybe ucExp exps
+
+  pure $ "-export([" <> T.intercalate ", " (exps'<>exps'') <> "])."
     -- TODO must export actual dctor fn
+
+  where
+  arities :: M.Map (Qualified Ident) Int
+  arities = M.map (\(t, _, _) -> tyArity t) $ E.names env
+
+  ucExp ident =
+      if arity > 0
+      then Just (runAtom ( Atom Nothing $ (runIdent ident <> "@uc")) <> "/" <> T.pack (show arity))
+      else Nothing
+    where
+    arity = fromMaybe 0 (M.lookup (Qualified (Just mn) ident) arities)
+
+
+
 
 identToTypeclassCtor :: Ident -> Atom
 identToTypeclassCtor a = Atom Nothing (runIdent a)
@@ -63,30 +83,47 @@ isTopLevelBinding :: Qualified t -> Bool
 isTopLevelBinding (Qualified (Just _) _) = True
 isTopLevelBinding (Qualified Nothing _) = False
 
+tyArity :: Type -> Int
+tyArity (TypeApp (TypeApp fn _) ty) | fn == E.tyFunction = 1 + tyArity ty
+tyArity (ForAll _ ty _) = tyArity ty
+tyArity (ConstrainedType _ ty) = 1 + tyArity ty
+tyArity _ = 0
+
 -- |
 -- Generate code in the simplified Erlang intermediate representation for all declarations in a
 -- module.
 --
 moduleToErl :: forall m .
     (Monad m, MonadReader Options m, MonadSupply m, MonadError MultipleErrors m)
-  => Module Ann
+  => E.Environment
+  -> Module Ann
   -> [(T.Text, Int)]
   -> m [Erl]
-moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
+moduleToErl env (Module _ mn _ _ foreigns decls) foreignExports =
   rethrow (addHint (ErrorInModule mn)) $ do
     erlDecls <- mapM topBindToErl decls
     optimized <- traverse (traverse optimize) erlDecls
     traverse_ checkExport foreigns
-    return $ map reExportForeign foreigns ++ concat optimized
+    return $ concatMap reExportForeign foreigns ++ concat optimized
   where
 
-  reExportForeign :: (Ident, Type) -> Erl
-  reExportForeign (ident, _) = --    | isFnTy ty =
-      let arity = exportArity ident
-          args = map (\m -> "X" <> T.pack (show m)) [ 1..arity ]
-          body = EApp (EAtomLiteral $ qualifiedToErl' mn ForeignModule ident) (map EVar args)
-          fun = foldr (\x fun' -> EFun Nothing x fun') body args
-      in EFunctionDef (Atom Nothing $ identToAtomName ident) [] fun
+  arities :: M.Map (Qualified Ident) Int
+  arities = M.map (\(t, _, _) -> tyArity t) $ E.names env
+
+  reExportForeign :: (Ident, Type) -> [Erl]
+  reExportForeign (ident, _) =
+    let arity = exportArity ident
+        fullArity = fromMaybe 0 (M.lookup (Qualified (Just mn) ident) arities)
+        args = map (\m -> "X" <> T.pack (show m)) [ 1..fullArity ]
+        body = EApp (EAtomLiteral $ qualifiedToErl' mn ForeignModule ident) (take arity $ map EVar args)
+        body' = curriedApp (drop arity $ map EVar args) body
+        fun = curriedLambda body' args
+    in [ EFunctionDef (Atom Nothing $ identToAtomName ident) [] fun
+       , EFunctionDef (uncurriedName (Atom Nothing $ identToAtomName ident)) args body'
+       ]
+
+  curriedLambda :: Erl -> [T.Text] -> Erl
+  curriedLambda = foldr (EFun Nothing)
 
   exportArity :: Ident -> Int
   exportArity ident = fromMaybe 0 $ findExport $ runIdent ident
@@ -104,17 +141,24 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
   findExport n = snd <$> find ((n==) . fst) foreignExports
 
   topBindToErl :: Bind Ann -> m [Erl]
-  topBindToErl (NonRec ann ident val) = return <$> topNonRecToErl ann ident val
-  topBindToErl (Rec vals) = forM vals (uncurry . uncurry $ topNonRecToErl)
+  topBindToErl (NonRec ann ident val) = topNonRecToErl ann ident val
+  topBindToErl (Rec vals) = concat <$> traverse (uncurry . uncurry $ topNonRecToErl) vals
 
-  topNonRecToErl ::  Ann -> Ident -> Expr Ann -> m Erl
+  topNonRecToErl :: Ann -> Ident -> Expr Ann -> m [ Erl ]
   topNonRecToErl _ ident val = do
     erl <- valueToErl val
     let (_, _, _, meta') = extractAnn val
     let ident' = case meta' of
           Just IsTypeClassConstructor -> identToTypeclassCtor ident
           _ -> Atom Nothing $ runIdent ident
-    pure $ EFunctionDef ident' [] erl
+    let arity = fromMaybe 0 (M.lookup (Qualified (Just mn) ident) arities)
+    let vars = map (\m -> "X" <> T.pack (show m)) [ 1..arity ]
+    pure $
+      [ EFunctionDef (uncurriedName ident') vars $ curriedApp (map EVar vars) erl | arity > 0 ]
+      <> [ EFunctionDef ident' [] erl ]
+
+  uncurriedName (Atom q t) = Atom q (t <> "@uc")
+  uncurriedName x = x
 
   bindToErl :: Bind Ann -> m [Erl]
   bindToErl (NonRec ann ident val) = return <$> nonRecToErl ann ident val
@@ -134,11 +178,7 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
 
   qualifiedToVar (Qualified _ ident) = identToVar ident
 
-  tyArity :: Type -> Int
-  tyArity (TypeApp (TypeApp fn _) ty) | fn == E.tyFunction = 1 + tyArity ty
-  tyArity (ForAll _ ty _) = tyArity ty
-  tyArity (ConstrainedType _ ty) = 1 + tyArity ty
-  tyArity _ = 0
+
 
   valueToErl :: Expr Ann -> m Erl
   valueToErl = valueToErl' Nothing
@@ -172,9 +212,14 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
       Var (_, _, _, Just (IsConstructor _ fields)) (Qualified _ ident) | length args == length fields ->
         return $ constructorLiteral (runIdent ident) args'
       Var (_, _, _, Just IsTypeClassConstructor) name ->
-         return $ flip (foldl (\fn a -> EApp fn [a])) args' $ EApp (EAtomLiteral $ qualifiedToTypeclassCtor name) []
+        return $ curriedApp args' $ EApp (EAtomLiteral $ qualifiedToTypeclassCtor name) []
 
-      _ -> flip (foldl (\fn a -> EApp fn [a])) args' <$> valueToErl f
+      Var _ qi@(Qualified q ident)
+        | arity <- fromMaybe 0 (M.lookup qi arities)
+        , length args == arity
+        -> return $ EApp (EAtomLiteral (uncurriedName $ qualifiedToErl qi)) args'
+
+      _ -> curriedApp args' <$> valueToErl f
     where
     unApp :: Expr Ann -> [Expr Ann] -> (Expr Ann, [Expr Ann])
     unApp (App _ val arg) args = unApp val (arg : args)
@@ -200,6 +245,9 @@ moduleToErl (Module _ mn _ _ foreigns decls) foreignExports =
     in pure createFn
 
   constructorLiteral name args = ETupleLiteral (EAtomLiteral (Atom Nothing (toAtomName name)) : args)
+
+  curriedApp :: [Erl] -> Erl -> Erl
+  curriedApp args' body = flip (foldl (\fn a -> EApp fn [a])) args' body
 
   literalToValueErl :: Literal (Expr Ann) -> m Erl
   literalToValueErl = literalToValueErl' EMapLiteral valueToErl
