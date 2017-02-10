@@ -6,7 +6,6 @@
 module Language.PureScript.CodeGen.Erl
   ( module AST
   , moduleToErl
-  , moduleExports
   ) where
 
 import Prelude.Compat
@@ -17,9 +16,8 @@ import qualified Data.Text as T
 import Data.Traversable
 import Data.Foldable
 import Data.Monoid
-import Data.List (nub)
-import Data.Maybe (fromMaybe, mapMaybe)
 import qualified Data.Map as M
+import Data.Maybe (fromMaybe)
 import Control.Monad.Error.Class (MonadError(..))
 
 import Control.Arrow (first)
@@ -39,37 +37,8 @@ import Language.PureScript.Traversals (sndM)
 import Language.PureScript.CodeGen.Erl.Common
 import Language.PureScript.CodeGen.Erl.Optimizer
 
-import Debug.Trace
-
 freshNameErl :: (MonadSupply m) => m T.Text
 freshNameErl = fmap (("_@" <>) . T.pack . show) fresh
-
-moduleExports :: forall m .
-    (Monad m, MonadReader Options m, MonadSupply m, MonadError MultipleErrors m)
-  => E.Environment
-  -> Module Ann
-  -> [(T.Text, Int)]
-  -> m T.Text
-moduleExports env (Module _ mn _ exps _ _) _ = do
-  -- TODO nub temporary
-  let exps' = nub $ map ((<> "/0") . runAtom . Atom Nothing . runIdent) exps
-  let exps'' = nub $ mapMaybe ucExp exps
-
-  pure $ "-export([" <> T.intercalate ", " (exps'<>exps'') <> "])."
-    -- TODO must export actual dctor fn
-
-  where
-  arities :: M.Map (Qualified Ident) Int
-  arities = M.map (\(t, _, _) -> tyArity t) $ E.names env
-
-  ucExp ident =
-      if arity > 0
-      then Just (runAtom ( Atom Nothing $ (runIdent ident <> "@uc")) <> "/" <> T.pack (show arity))
-      else Nothing
-    where
-    arity = fromMaybe 0 (M.lookup (Qualified (Just mn) ident) arities)
-
-
 
 
 identToTypeclassCtor :: Ident -> Atom
@@ -98,19 +67,23 @@ moduleToErl :: forall m .
   => E.Environment
   -> Module Ann
   -> [(T.Text, Int)]
-  -> m [Erl]
+  -> m ([T.Text], [Erl])
 moduleToErl env (Module _ mn _ _ foreigns decls) foreignExports =
   rethrow (addHint (ErrorInModule mn)) $ do
-    erlDecls <- mapM topBindToErl decls
-    optimized <- traverse (traverse optimize) erlDecls
+    res <- traverse topBindToErl decls
+    let (exports, erlDecls) = biconcat $ res <> map reExportForeign foreigns
+    optimized <- traverse optimize erlDecls
     traverse_ checkExport foreigns
-    return $ concatMap reExportForeign foreigns ++ concat optimized
+    return (map (\(a,i) -> runAtom a <> "/" <> T.pack (show i)) exports, optimized)
   where
+
+  biconcat :: [([a], [b])] -> ([a], [b])
+  biconcat x = (concatMap fst x, concatMap snd x)
 
   arities :: M.Map (Qualified Ident) Int
   arities = M.map (\(t, _, _) -> tyArity t) $ E.names env
 
-  reExportForeign :: (Ident, Type) -> [Erl]
+  reExportForeign :: (Ident, Type) -> ([(Atom,Int)], [Erl])
   reExportForeign (ident, _) =
     let arity = exportArity ident
         fullArity = fromMaybe 0 (M.lookup (Qualified (Just mn) ident) arities)
@@ -118,9 +91,10 @@ moduleToErl env (Module _ mn _ _ foreigns decls) foreignExports =
         body = EApp (EAtomLiteral $ qualifiedToErl' mn ForeignModule ident) (take arity $ map EVar args)
         body' = curriedApp (drop arity $ map EVar args) body
         fun = curriedLambda body' args
-    in [ EFunctionDef (Atom Nothing $ identToAtomName ident) [] fun
-       , EFunctionDef (uncurriedName (Atom Nothing $ identToAtomName ident)) args body'
-       ]
+        nameC = curriedName (Atom Nothing $ identToAtomName ident)
+        nameUC = uncurriedName (Atom Nothing $ identToAtomName ident)
+    in ([(nameC, 0), (nameUC, fullArity)],
+        [ EFunctionDef nameC [] fun, EFunctionDef nameUC args body'])
 
   curriedLambda :: Erl -> [T.Text] -> Erl
   curriedLambda = foldr (EFun Nothing)
@@ -140,25 +114,31 @@ moduleToErl env (Module _ mn _ _ foreigns decls) foreignExports =
   findExport :: T.Text -> Maybe Int
   findExport n = snd <$> find ((n==) . fst) foreignExports
 
-  topBindToErl :: Bind Ann -> m [Erl]
+  topBindToErl :: Bind Ann -> m ([(Atom,Int)], [Erl])
   topBindToErl (NonRec ann ident val) = topNonRecToErl ann ident val
-  topBindToErl (Rec vals) = concat <$> traverse (uncurry . uncurry $ topNonRecToErl) vals
+  topBindToErl (Rec vals) = biconcat <$> traverse (uncurry . uncurry $ topNonRecToErl) vals
 
-  topNonRecToErl :: Ann -> Ident -> Expr Ann -> m [ Erl ]
+  topNonRecToErl :: Ann -> Ident -> Expr Ann -> m ([(Atom,Int)], [ Erl ])
   topNonRecToErl _ ident val = do
     erl <- valueToErl val
     let (_, _, _, meta') = extractAnn val
-    let ident' = case meta' of
-          Just IsTypeClassConstructor -> identToTypeclassCtor ident
-          _ -> Atom Nothing $ runIdent ident
+    let (ident', onlyUC) = case meta' of
+          Just IsTypeClassConstructor -> (identToTypeclassCtor ident, True)
+          _ -> (Atom Nothing $ runIdent ident, False)
     let arity = fromMaybe 0 (M.lookup (Qualified (Just mn) ident) arities)
     let vars = map (\m -> "X" <> T.pack (show m)) [ 1..arity ]
-    pure $
-      [ EFunctionDef (uncurriedName ident') vars $ curriedApp (map EVar vars) erl | arity > 0 ]
-      <> [ EFunctionDef ident' [] erl ]
+    pure (
+      [ (uncurriedName ident', arity) | arity > 0 || onlyUC ]
+      <> [ (curriedName ident', 0) | not onlyUC ],
 
-  uncurriedName (Atom q t) = Atom q (t <> "@uc")
-  uncurriedName x = x
+      [ EFunctionDef (uncurriedName ident') vars $ curriedApp (map EVar vars) erl | arity > 0 || onlyUC ]
+      <> [ EFunctionDef (curriedName ident') [] erl | not onlyUC ]
+            )
+
+  uncurriedName = id
+
+  curriedName (Atom q t) = Atom q (t <> "@c")
+  curriedName x = x
 
   bindToErl :: Bind Ann -> m [Erl]
   bindToErl (NonRec ann ident val) = return <$> nonRecToErl ann ident val
@@ -178,8 +158,6 @@ moduleToErl env (Module _ mn _ _ foreigns decls) foreignExports =
 
   qualifiedToVar (Qualified _ ident) = identToVar ident
 
-
-
   valueToErl :: Expr Ann -> m Erl
   valueToErl = valueToErl' Nothing
 
@@ -188,7 +166,7 @@ moduleToErl env (Module _ mn _ _ foreigns decls) foreignExports =
     maybe id rethrowWithPosition pos $ literalToValueErl l
   valueToErl' _ (Var _ (Qualified (Just (ModuleName [ProperName prim])) (Ident undef))) | prim == C.prim, undef == C.undefined =
     return $ EAtomLiteral $ Atom Nothing C.undefined
-  valueToErl' _ (Var _ ident) | isTopLevelBinding ident = return $ EApp (EAtomLiteral $ qualifiedToErl ident) []
+  valueToErl' _ (Var _ ident) | isTopLevelBinding ident = return $ EApp (EAtomLiteral $ curriedName $ qualifiedToErl ident) []
   valueToErl' _ (Var _ ident) = return $ EVar $ qualifiedToVar ident
 
   valueToErl' ident (Abs _ arg val) = do
