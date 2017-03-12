@@ -98,6 +98,11 @@ data Erl
 
   | EArrayLiteral [Erl]
 
+  -- |
+  -- Attribute including raw text between the parens
+  --
+  | EAttribute PSString PSString
+
   deriving (Show, Eq)
 
 data EFunBinder

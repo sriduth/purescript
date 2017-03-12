@@ -141,6 +141,12 @@ literals = mkPattern' match
       g <- prettyPrintErl' eg
       return $ parensPos c <> emit " when "  <> g <> emit " -> " <> v
 
+  match (EAttribute name text) = case (decodeString name, decodeString text) of
+    (Just name', Just text') ->
+      return $ emit "-" <> emit name' <> emit "(" <> emit text' <> emit ")"
+      -- TODO: Check valid atom, cconvert etc
+    _ -> internalError "Did not expect non UTF8 safe attribute text"
+
   match _ = mzero
 
 

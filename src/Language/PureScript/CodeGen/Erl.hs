@@ -17,10 +17,10 @@ import Data.Traversable
 import Data.Foldable
 import Data.Monoid
 import qualified Data.Map as M
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Control.Monad.Error.Class (MonadError(..))
 
-import Control.Arrow (first)
+import Control.Arrow (first, second)
 import Control.Monad.Reader (MonadReader(..))
 
 import Control.Monad.Supply.Class
@@ -36,6 +36,8 @@ import Language.PureScript.Traversals (sndM)
 
 import Language.PureScript.CodeGen.Erl.Common
 import Language.PureScript.CodeGen.Erl.Optimizer
+
+import Debug.Trace
 
 freshNameErl :: (MonadSupply m) => m T.Text
 freshNameErl = fmap (("_@" <>) . T.pack . show) fresh
@@ -74,8 +76,24 @@ moduleToErl env (Module _ mn _ _ foreigns decls) foreignExports =
     let (exports, erlDecls) = biconcat $ res <> map reExportForeign foreigns
     optimized <- traverse optimize erlDecls
     traverse_ checkExport foreigns
-    return (map (\(a,i) -> runAtom a <> "/" <> T.pack (show i)) exports, optimized)
+
+    let attributes = findAttributes decls
+
+    return (map (\(a,i) -> runAtom a <> "/" <> T.pack (show i)) exports, attributes ++ optimized)
   where
+
+  findAttributes :: [Bind Ann] -> [Erl]
+  findAttributes expr = map (uncurry EAttribute) $ mapMaybe getAttribute $ concatMap onBind expr
+    where
+      getAttribute (TypeApp (TypeApp (TypeConstructor (Qualified (Just mn) (ProperName "Attribute"))) (TypeLevelString a)) (TypeLevelString b))
+        = Just (a,b)
+      getAttribute _ = Nothing
+
+      getType ident = (\(t, _, _) -> t) <$> M.lookup (Qualified (Just mn) ident) (E.names env)
+
+      onRecBind ((_, ident), _) = getType ident
+      onBind (NonRec _ ident val) = mapMaybe id [ getType ident ]
+      onBind (Rec vals) = mapMaybe onRecBind vals
 
   biconcat :: [([a], [b])] -> ([a], [b])
   biconcat x = (concatMap fst x, concatMap snd x)
@@ -205,8 +223,8 @@ moduleToErl env (Module _ mn _ _ foreigns decls) foreignExports =
 
   valueToErl' _ (Case _ values binders) = do
     vals <- mapM valueToErl values
-    (exprs, binders') <- bindersToErl vals binders
-    let ret = EApp (EFunFull Nothing binders') vals
+    (exprs, binders', newvals) <- bindersToErl vals binders
+    let ret = EApp (EFunFull Nothing binders') (vals++newvals)
     pure $ case exprs of
       [] -> ret
       _ -> EBlock (exprs ++ [ret])
@@ -246,39 +264,59 @@ moduleToErl env (Module _ mn _ _ foreigns decls) foreignExports =
   boolToAtom True = EAtomLiteral $ Atom Nothing "true"
   boolToAtom False = EAtomLiteral $ Atom Nothing "false"
 
-
-  bindersToErl :: [Erl] -> [CaseAlternative Ann] -> m ([Erl], [(EFunBinder, Erl)])
+  bindersToErl :: [Erl] -> [CaseAlternative Ann] -> m ([Erl], [(EFunBinder, Erl)], [Erl])
   bindersToErl vals cases = do
     res <- mapM caseToErl cases
-    pure (concatMap fst res, concatMap snd res)
-    where
-    caseToErl :: CaseAlternative Ann -> m ([Erl], [(EFunBinder, Erl)])
-    caseToErl (CaseAlternative binders (Right e)) = do
-      bs <- mapM binderToErl' binders
-      e' <- valueToErl e
-      pure ([], [(EFunBinder bs Nothing, e')])
-    caseToErl (CaseAlternative binders (Left guards)) = do
-      bs <- mapM binderToErl' binders
-      res <- mapM (guard bs) guards
-      pure (concatMap fst res, map snd res)
-      where
-        guard bs (ge, e) = do
-          var <- freshNameErl
-          ge' <- valueToErl ge
-          let fun = EFunFull Nothing
-                      [(EFunBinder bs Nothing, ge'),
-                      (EFunBinder (replicate (length bs) (EVar "_")) Nothing, boolToAtom False)]
-              cas = EApp fun vals
-          e' <- valueToErl e
-          pure ([EVarBind var cas], (EFunBinder bs (Just $ Guard $ EVar var), e'))
+    let arrayVars = map fst $ concatMap (\(_,_,x) -> x) res
+        arrayMatches = map (\(_,_,x) -> x) res
+        convBinder (count, binds) (_, binders, arrayMatches) =
+          (count + length arrayMatches, binds ++ map go binders)
+          where
+            go (EFunBinder bs z, e) = (EFunBinder (bs++padBinds count arrayMatches) z, e)
+        padBinds n binds = replicate n (EVar "_") ++ (map snd binds) ++ replicate (length arrayVars - n - length binds) (EVar "_")
+        binders' = snd $ foldl convBinder (0, []) res
 
-  binderToErl' :: Binder Ann -> m Erl
-  binderToErl' (NullBinder _) = pure $ EVar "_"
-  binderToErl' (VarBinder _ ident) = pure $ EVar $ identToVar ident
-  binderToErl' (LiteralBinder _ (ArrayLiteral _)) = error "Array patterns not supported for Erlang backend"
-  binderToErl' (LiteralBinder _ lit) = literalToValueErl' EMapPattern binderToErl' lit
-  binderToErl' (ConstructorBinder (_, _, _, Just IsNewtype) _ _ [b]) = binderToErl' b
-  binderToErl' (ConstructorBinder _ _ (Qualified _ (ProperName ctorName)) binders) = do
-    args' <- mapM binderToErl' binders
-    pure $ constructorLiteral ctorName args'
-  binderToErl' (NamedBinder _ ident binder) = EVarBind (identToVar ident) <$> binderToErl' binder
+    pure (concatMap (\(x,_,_) -> x) res, binders', arrayVars)
+    where
+    caseToErl :: CaseAlternative Ann -> m ([Erl], [(EFunBinder, Erl)], [(Erl, Erl)])
+    caseToErl (CaseAlternative binders alt) = do
+      b' <- mapM (binderToErl' vals) binders
+      let (bs, erls) = second concat $ unzip b'
+      (es, res) <- case alt of
+        Right e -> do
+          e' <- valueToErl e
+          pure ([], [(EFunBinder bs Nothing, e')])
+        Left guards -> first concat <$> unzip <$> mapM (guard bs) guards
+      pure (es ++ map ((\f -> f $ (EFunBinder bs Nothing)) . fst) erls, res, map (first EVar . snd) erls)
+    guard bs (ge, e) = do
+      var <- freshNameErl
+      ge' <- valueToErl ge
+      let fun = EFunFull Nothing
+                  [(EFunBinder bs Nothing, ge'),
+                  (EFunBinder (replicate (length bs) (EVar "_")) Nothing, boolToAtom False)]
+          cas = EApp fun vals
+      e' <- valueToErl e
+      pure ([EVarBind var cas], (EFunBinder bs (Just $ Guard $ EVar var), e'))
+
+  binderToErl' :: [Erl] -> Binder Ann -> m (Erl,[(EFunBinder -> Erl,(T.Text, Erl))])
+  binderToErl' _ (NullBinder _) = pure (EVar "_", [])
+  binderToErl' _ (VarBinder _ ident) = pure (EVar $ identToVar ident, [])
+  binderToErl' vals (LiteralBinder _ (ArrayLiteral es)) = do
+    x <- freshNameErl
+    args' <- mapM (binderToErl' vals) es
+
+    let cas binder = EApp (EFunFull Nothing
+                [(binder, EApp (EAtomLiteral $ Atom (Just "array") "to_list") [EVar x]),
+                (EFunBinder (replicate (length vals) (EVar "_")) Nothing, EAtomLiteral $ Atom Nothing "nil")]) vals
+    var <- freshNameErl
+
+    let arr = EArrayLiteral (map fst args')
+    pure (EVar x, ((EVarBind var . cas, (var, arr)) : concatMap snd args'))
+  binderToErl' vals (LiteralBinder _ lit) = (,[]) <$> literalToValueErl' EMapPattern (fmap fst . binderToErl' vals) lit
+  binderToErl' vals (ConstructorBinder (_, _, _, Just IsNewtype) _ _ [b]) = binderToErl' vals b
+  binderToErl' vals (ConstructorBinder _ _ (Qualified _ (ProperName ctorName)) binders) = do
+    args' <- mapM (binderToErl' vals) binders
+    pure (constructorLiteral ctorName (map fst args'), concatMap snd args')
+  binderToErl' vals (NamedBinder _ ident binder) = do
+    (e, xs) <- binderToErl' vals binder
+    pure (EVarBind (identToVar ident) e, xs)
