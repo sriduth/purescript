@@ -159,13 +159,31 @@ moduleToErl env (Module _ mn _ _ foreigns decls) foreignExports =
   curriedName x = x
 
   bindToErl :: Bind Ann -> m [Erl]
-  bindToErl (NonRec ann ident val) = return <$> nonRecToErl ann ident val
-  bindToErl (Rec vals) = forM vals (uncurry . uncurry $ nonRecToErl)
+  bindToErl (NonRec ann ident val) =
+    pure <$> EVarBind (identToVar ident) <$> valueToErl' (Just ident) val
+  bindToErl (Rec [((ann, ident), val)]) = 
+    pure <$> EVarBind (identToVar ident) <$> valueToErl' (Just ident) val
+  -- For recursive bindings F(X) = E1, G(X) = E2, ... we have a problem as the variables are not
+  -- in scope until each expression is defined. To avoid lifting to the top level first generate
+  -- funs which take a tuple of such funs F'({F', G'}) -> (X) -> E1 etc.
+  -- with occurences of F, G replaced in E1, E2 with F'({F',G'})
+  -- and then bind these F = F'({F',G'})
+  -- TODO: Only do this if there are multiple mutually recursive bindings! Else a named fun works.
+  bindToErl (Rec vals) = do
+    let vars = (identToVar . snd . fst) <$> vals
+        varTup = ETupleLiteral $ EVar <$> (<> "@f") <$> vars
+        replaceFun fvar = everywhereOnErl go
+          where
+            go (EVar f) | f == fvar = EApp (EVar $ f <> "@f") [varTup]
+            go e = e
 
-  nonRecToErl ::  Ann -> Ident -> Expr Ann -> m Erl
-  nonRecToErl _ ident val = do
-    erl <- valueToErl' (Just ident) val
-    pure $ EVarBind (identToVar ident) erl
+    funs <- forM vals $ \((_, ident), val) -> do
+      erl <- valueToErl' Nothing val
+      let erl' = foldr replaceFun erl vars
+      let fun = EFunFull Nothing [(EFunBinder [varTup] Nothing, erl')]
+      pure $ EVarBind (identToVar ident <> "@f") fun
+    let rebinds = map (\var -> EVarBind var (EApp (EVar $ var <> "@f") [varTup])) vars
+    pure $ funs ++ rebinds
 
   qualifiedToErl' mn' moduleType ident = Atom (Just $ atomModuleName mn' moduleType) (runIdent ident)
 
