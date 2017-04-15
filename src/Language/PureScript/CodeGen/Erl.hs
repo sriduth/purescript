@@ -161,8 +161,9 @@ moduleToErl env (Module _ mn _ _ foreigns decls) foreignExports =
   bindToErl :: Bind Ann -> m [Erl]
   bindToErl (NonRec ann ident val) =
     pure <$> EVarBind (identToVar ident) <$> valueToErl' (Just ident) val
-  bindToErl (Rec [((ann, ident), val)]) = 
-    pure <$> EVarBind (identToVar ident) <$> valueToErl' (Just ident) val
+  -- bindToErl (Rec [((ann, ident), val)]) =
+  --   pure <$> EVarBind (identToVar ident) <$> valueToErl' (Just ident) val
+
   -- For recursive bindings F(X) = E1, G(X) = E2, ... we have a problem as the variables are not
   -- in scope until each expression is defined. To avoid lifting to the top level first generate
   -- funs which take a tuple of such funs F'({F', G'}) -> (X) -> E1 etc.
@@ -249,7 +250,8 @@ moduleToErl env (Module _ mn _ _ foreigns decls) foreignExports =
   valueToErl' _ (Let _ ds val) = do
     ds' <- concat <$> mapM bindToErl ds
     ret <- valueToErl val
-    return $ EBlock (ds' ++ [ret])
+    -- TODO: Rename variables rather than creating temporary scope just for this
+    return $ iife (ds' ++ [ret])
 
   valueToErl' _ (Constructor (_, _, _, Just IsNewtype) _ _ _) = error "newtype ctor"
   valueToErl' _ (Constructor _ _ (ProperName ctor) fields) =
@@ -257,6 +259,8 @@ moduleToErl env (Module _ mn _ _ foreigns decls) foreignExports =
           let body = constructorLiteral ctor ((EVar . identToVar) `map` fields)
           in foldr (\f inner -> EFun Nothing (identToVar f) inner) body fields
     in pure createFn
+
+  iife exprs = EApp (EFunFull Nothing [(EFunBinder [] Nothing, (EBlock exprs))]) []
 
   constructorLiteral name args = ETupleLiteral (EAtomLiteral (Atom Nothing (toAtomName name)) : args)
 
