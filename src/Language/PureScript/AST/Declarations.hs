@@ -1,4 +1,6 @@
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE DeriveTraversable #-}
 
 -- |
 -- Data types for modules and declarations
@@ -43,7 +45,8 @@ data TypeSearch
 
 -- | A type of error messages
 data SimpleErrorMessage
-  = ErrorParsingFFIModule FilePath (Maybe Bundle.ErrorMessage)
+  = ModuleNotFound ModuleName 
+  | ErrorParsingFFIModule FilePath (Maybe Bundle.ErrorMessage)
   | ErrorParsingModule P.ParseError
   | MissingFFIModule ModuleName
   | MultipleFFIModules ModuleName [FilePath]
@@ -134,11 +137,15 @@ data SimpleErrorMessage
   | CaseBinderLengthDiffers Int [Binder]
   | IncorrectAnonymousArgument
   | InvalidOperatorInBinder (Qualified (OpName 'ValueOpName)) (Qualified Ident)
-  | DeprecatedRequirePath
   | CannotGeneralizeRecursiveFunction Ident Type
   | CannotDeriveNewtypeForData (ProperName 'TypeName)
   | ExpectedWildcard (ProperName 'TypeName)
   | InvalidFFIArity ModuleName Text Int Int
+  | CannotUseBindWithDo
+  -- | instance name, type class, expected argument count, actual argument count
+  | ClassInstanceArityMismatch Ident (Qualified (ProperName 'ClassName)) Int Int
+  -- | a user-defined warning raised by using the Warn type class
+  | UserDefinedWarning Type
   deriving (Show)
 
 -- | Error message hints, providing more detailed information about failure.
@@ -582,6 +589,11 @@ data Expr
   --
   | ObjectUpdate Expr [(PSString, Expr)]
   -- |
+  -- Object updates with nested support: `x { foo { bar = e } }`
+  -- Replaced during desugaring into a `Let` and nested `ObjectUpdate`s
+  --
+  | ObjectUpdateNested Expr (PathTree Expr)
+  -- |
   -- Function introduction
   --
   | Abs (Either Ident Binder) Expr
@@ -695,6 +707,39 @@ data DoNotationElement
   --
   | PositionedDoNotationElement SourceSpan [Comment] DoNotationElement
   deriving (Show)
+
+
+-- For a record update such as:
+--
+--  x { foo = 0
+--    , bar { baz = 1
+--          , qux = 2 } }
+--
+-- We represent the updates as the `PathTree`:
+--
+--  [ ("foo", Leaf 3)
+--  , ("bar", Branch [ ("baz", Leaf 1)
+--                   , ("qux", Leaf 2) ]) ]
+--
+-- Which we then convert to an expression representing the following:
+--
+--   let x' = x
+--   in x' { foo = 0
+--         , bar = x'.bar { baz = 1
+--                        , qux = 2 } }
+--
+-- The `let` here is required to prevent re-evaluating the object expression `x`.
+-- However we don't generate this when using an anonymous argument for the object.
+--
+
+newtype PathTree t = PathTree (AssocList PSString (PathNode t))
+  deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
+
+data PathNode t = Leaf t | Branch (PathTree t)
+  deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
+
+newtype AssocList k t = AssocList { runAssocList :: [(k, t)] }
+  deriving (Show, Eq, Ord, Foldable, Functor, Traversable)
 
 $(deriveJSON (defaultOptions { sumEncoding = ObjectWithSingleField }) ''DeclarationRef)
 $(deriveJSON (defaultOptions { sumEncoding = ObjectWithSingleField }) ''ImportDeclarationType)

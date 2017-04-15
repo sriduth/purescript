@@ -24,21 +24,27 @@ module Language.PureScript.Ide.Util
   , withEmptyAnn
   , valueOperatorAliasT
   , typeOperatorAliasT
-  , module Language.PureScript.Ide.Conversions
+  , prettyTypeT
+  , properNameT
+  , identT
+  , opNameT
+  , ideReadFile
   , module Language.PureScript.Ide.Logging
   ) where
 
 import           Protolude                           hiding (decodeUtf8,
                                                       encodeUtf8)
 
-import           Control.Lens                        ((^.))
+import           Control.Lens                        hiding ((&), op)
 import           Data.Aeson
 import qualified Data.Text                           as T
+import qualified Data.Text.Lazy                      as TL
 import           Data.Text.Lazy.Encoding             (decodeUtf8, encodeUtf8)
 import qualified Language.PureScript                 as P
-import           Language.PureScript.Ide.Conversions
+import           Language.PureScript.Ide.Error
 import           Language.PureScript.Ide.Logging
 import           Language.PureScript.Ide.Types
+import           System.IO.UTF8                  (readUTF8FileT)
 
 identifierFromIdeDeclaration :: IdeDeclaration -> Text
 identifierFromIdeDeclaration d = case d of
@@ -46,7 +52,7 @@ identifierFromIdeDeclaration d = case d of
   IdeDeclType t -> t ^. ideTypeName . properNameT
   IdeDeclTypeSynonym s -> s ^. ideSynonymName . properNameT
   IdeDeclDataConstructor dtor -> dtor ^. ideDtorName . properNameT
-  IdeDeclTypeClass name -> P.runProperName name
+  IdeDeclTypeClass tc -> tc ^. ideTCName . properNameT
   IdeDeclValueOperator op -> op ^. ideValueOpName & P.runOpName
   IdeDeclTypeOperator op -> op ^. ideTypeOpName & P.runOpName
   IdeDeclKind name -> P.runProperName name
@@ -66,14 +72,14 @@ completionFromMatch (Match (m, IdeDeclarationAnn ann decl)) =
   where
     (complIdentifier, complExpandedType) = case decl of
       IdeDeclValue v -> (v ^. ideValueIdent . identT, v ^. ideValueType & prettyTypeT)
-      IdeDeclType t -> (t ^. ideTypeName . properNameT, t ^. ideTypeKind & P.prettyPrintKind & toS )
+      IdeDeclType t -> (t ^. ideTypeName . properNameT, t ^. ideTypeKind & P.prettyPrintKind)
       IdeDeclTypeSynonym s -> (s ^. ideSynonymName . properNameT, s ^. ideSynonymType & prettyTypeT)
       IdeDeclDataConstructor d -> (d ^. ideDtorName . properNameT, d ^. ideDtorType & prettyTypeT)
-      IdeDeclTypeClass name -> (P.runProperName name, "class")
+      IdeDeclTypeClass d -> (d ^. ideTCName . properNameT, "type class")
       IdeDeclValueOperator (IdeValueOperator op ref precedence associativity typeP) ->
         (P.runOpName op, maybe (showFixity precedence associativity (valueOperatorAliasT ref) op) prettyTypeT typeP)
       IdeDeclTypeOperator (IdeTypeOperator op ref precedence associativity kind) ->
-        (P.runOpName op, maybe (showFixity precedence associativity (typeOperatorAliasT ref) op) (toS . P.prettyPrintKind) kind)
+        (P.runOpName op, maybe (showFixity precedence associativity (typeOperatorAliasT ref) op) P.prettyPrintKind kind)
       IdeDeclKind k -> (P.runProperName k, "kind")
 
     complModule = P.runModuleName m
@@ -102,10 +108,10 @@ typeOperatorAliasT i =
   P.showQualified P.runProperName i
 
 encodeT :: (ToJSON a) => a -> Text
-encodeT = toS . decodeUtf8 . encode
+encodeT = TL.toStrict . decodeUtf8 . encode
 
 decodeT :: (FromJSON a) => Text -> Maybe a
-decodeT = decode . encodeUtf8 . toS
+decodeT = decode . encodeUtf8 . TL.fromStrict
 
 unwrapPositioned :: P.Declaration -> P.Declaration
 unwrapPositioned (P.PositionedDeclaration _ _ x) = unwrapPositioned x
@@ -114,3 +120,28 @@ unwrapPositioned x = x
 unwrapPositionedRef :: P.DeclarationRef -> P.DeclarationRef
 unwrapPositionedRef (P.PositionedDeclarationRef _ _ x) = unwrapPositionedRef x
 unwrapPositionedRef x = x
+
+properNameT :: Iso' (P.ProperName a) Text
+properNameT = iso P.runProperName P.ProperName
+
+identT :: Iso' P.Ident Text
+identT = iso P.runIdent P.Ident
+
+opNameT :: Iso' (P.OpName a) Text
+opNameT = iso P.runOpName P.OpName
+
+ideReadFile :: (MonadIO m, MonadError IdeError m) => FilePath -> m Text
+ideReadFile fp = do
+  contents :: Either IOException Text <- liftIO (try (readUTF8FileT fp))
+  either
+    (\_ -> throwError (GeneralError ("Couldn't find file at: " <> T.pack fp)))
+    pure
+    contents
+
+prettyTypeT :: P.Type -> Text
+prettyTypeT =
+  T.unwords
+  . map T.strip
+  . T.lines
+  . T.pack
+  . P.prettyPrintTypeWithUnicode

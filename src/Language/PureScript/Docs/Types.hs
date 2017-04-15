@@ -4,19 +4,18 @@ module Language.PureScript.Docs.Types
   )
   where
 
-import Prelude.Compat
+import Protolude hiding (to, from)
+import Prelude (String, unlines, lookup)
 
-import Control.Arrow (first, (***))
-import Control.Monad (when)
-import Control.Monad.Error.Class (catchError)
+import Control.Arrow ((***))
 
 import Data.Aeson ((.=))
 import Data.Aeson.BetterErrors
-import Data.ByteString.Lazy (ByteString)
-import Data.Either (isLeft, isRight)
-import Data.Maybe (mapMaybe, fromMaybe, maybeToList)
-import Data.Monoid ((<>))
-import Data.Text (Text)
+  (Parse, ParseError, parse, keyOrDefault, throwCustomError, key, asText,
+   keyMay, withString, eachInArray, asNull, (.!), toAesonParser, toAesonParser',
+   fromAesonParser, perhaps, withText, asIntegral, nth, eachInObjectWithKey,
+   asString)
+import qualified Data.Map as Map
 import Data.Time.Clock (UTCTime)
 import qualified Data.Time.Format as TimeFormat
 import Data.Version
@@ -33,7 +32,8 @@ import Web.Bower.PackageMeta hiding (Version, displayError)
 import Language.PureScript.Docs.RenderedCode as ReExports
   (RenderedCode, asRenderedCode,
    ContainingModule(..), asContainingModule,
-   RenderedCodeElement(..), asRenderedCodeElement)
+   RenderedCodeElement(..), asRenderedCodeElement,
+   Namespace(..), FixityAlias)
 
 --------------------
 -- Types
@@ -47,7 +47,7 @@ data Package a = Package
   -- field. It should eventually be changed to just UTCTime.
   , pkgTagTime              :: Maybe UTCTime
   , pkgModules              :: [Module]
-  , pkgBookmarks            :: [Bookmark]
+  , pkgModuleMap            :: Map P.ModuleName PackageName
   , pkgResolvedDependencies :: [(PackageName, Version)]
   , pkgGithub               :: (GithubUser, GithubRepo)
   , pkgUploader             :: a
@@ -70,7 +70,7 @@ verifyPackage verifiedUser Package{..} =
           pkgVersionTag
           pkgTagTime
           pkgModules
-          pkgBookmarks
+          pkgModuleMap
           pkgResolvedDependencies
           pkgGithub
           verifiedUser
@@ -188,8 +188,6 @@ convertFundepsToStrings args fundeps =
       ) $ argsVec V.!? i
   toArgs from to = (map getArg from, map getArg to)
 
-type FixityAlias = P.Qualified (Either (P.ProperName 'P.TypeName) (Either P.Ident (P.ProperName 'P.ConstructorName)))
-
 declInfoToString :: DeclarationInfo -> Text
 declInfoToString (ValueDeclaration _) = "value"
 declInfoToString (DataDeclaration _ _) = "data"
@@ -198,6 +196,23 @@ declInfoToString (TypeSynonymDeclaration _ _) = "typeSynonym"
 declInfoToString (TypeClassDeclaration _ _ _) = "typeClass"
 declInfoToString (AliasDeclaration _ _) = "alias"
 declInfoToString ExternKindDeclaration = "kind"
+
+declInfoNamespace :: DeclarationInfo -> Namespace
+declInfoNamespace = \case
+  ValueDeclaration{} ->
+    ValueLevel
+  DataDeclaration{} ->
+    TypeLevel
+  ExternDataDeclaration{} ->
+    TypeLevel
+  TypeSynonymDeclaration{} ->
+    TypeLevel
+  TypeClassDeclaration{} ->
+    TypeLevel
+  AliasDeclaration _ alias ->
+    either (const TypeLevel) (const ValueLevel) (P.disqualify alias)
+  ExternKindDeclaration{} ->
+    KindLevel
 
 isTypeClass :: Declaration -> Bool
 isTypeClass Declaration{..} =
@@ -274,6 +289,20 @@ childDeclInfoToString (ChildInstance _ _)      = "instance"
 childDeclInfoToString (ChildDataConstructor _) = "dataConstructor"
 childDeclInfoToString (ChildTypeClassMember _) = "typeClassMember"
 
+childDeclInfoNamespace :: ChildDeclarationInfo -> Namespace
+childDeclInfoNamespace =
+  -- We could just write this as `const ValueLevel` but by doing it this way,
+  -- if another constructor is added, we get a warning which acts as a prompt
+  -- to update this, instead of having this function (possibly incorrectly)
+  -- just return ValueLevel for the new constructor.
+  \case
+    ChildInstance{} ->
+      ValueLevel
+    ChildDataConstructor{} ->
+      ValueLevel
+    ChildTypeClassMember{} ->
+      ValueLevel
+
 isTypeClassMember :: ChildDeclaration -> Bool
 isTypeClassMember ChildDeclaration{..} =
   case cdeclInfo of
@@ -308,8 +337,6 @@ data PackageError
   | InvalidTime
   deriving (Show, Eq, Ord)
 
-type Bookmark = InPackage (P.ModuleName, Text)
-
 data InPackage a
   = Local a
   | FromDep PackageName a
@@ -330,13 +357,97 @@ ignorePackage :: InPackage a -> a
 ignorePackage (Local x) = x
 ignorePackage (FromDep _ x) = x
 
+----------------------------------------------------
+-- Types for links between declarations
+
+data LinksContext = LinksContext
+  { ctxGithub               :: (GithubUser, GithubRepo)
+  , ctxModuleMap            :: Map P.ModuleName PackageName
+  , ctxResolvedDependencies :: [(PackageName, Version)]
+  , ctxPackageName          :: PackageName
+  , ctxVersion              :: Version
+  , ctxVersionTag           :: Text
+  }
+  deriving (Show, Eq, Ord)
+
+data DocLink = DocLink
+  { linkLocation  :: LinkLocation
+  , linkTitle     :: Text
+  , linkNamespace :: Namespace
+  }
+  deriving (Show, Eq, Ord)
+
+data LinkLocation
+  -- | A link to a declaration in the same module.
+  = SameModule
+
+  -- | A link to a declaration in a different module, but still in the current
+  -- package; we need to store the current module and the other declaration's
+  -- module.
+  | LocalModule P.ModuleName P.ModuleName
+
+  -- | A link to a declaration in a different package. We store: current module
+  -- name, name of the other package, version of the other package, and name of
+  -- the module in the other package that the declaration is in.
+  | DepsModule P.ModuleName PackageName Version P.ModuleName
+
+  -- | A link to a declaration that is built in to the compiler, e.g. the Prim
+  -- module. In this case we only need to store the module that the builtin
+  -- comes from (at the time of writing, this will only ever be "Prim").
+  | BuiltinModule P.ModuleName
+  deriving (Show, Eq, Ord)
+
+-- | Given a links context, the current module name, the namespace of a thing
+-- to link to, its title, and its containing module, attempt to create a
+-- DocLink.
+getLink :: LinksContext -> P.ModuleName -> Namespace -> Text -> ContainingModule -> Maybe DocLink
+getLink LinksContext{..} curMn namespace target containingMod = do
+  location <- getLinkLocation
+  return DocLink
+    { linkLocation = location
+    , linkTitle = target
+    , linkNamespace = namespace
+    }
+
+  where
+  getLinkLocation = builtinLinkLocation <|> normalLinkLocation
+
+  normalLinkLocation = do
+    case containingMod of
+      ThisModule ->
+        return SameModule
+      OtherModule destMn ->
+        case Map.lookup destMn ctxModuleMap of
+          Nothing ->
+            return $ LocalModule curMn destMn
+          Just pkgName -> do
+            pkgVersion <- lookup pkgName ctxResolvedDependencies
+            return $ DepsModule curMn pkgName pkgVersion destMn
+
+  builtinLinkLocation = do
+    let primMn = P.moduleNameFromString "Prim"
+    guard $ containingMod == OtherModule primMn
+    -- TODO: ensure the declaration exists in the builtin module too
+    return $ BuiltinModule primMn
+
+getLinksContext :: Package a -> LinksContext
+getLinksContext Package{..} =
+  LinksContext
+    { ctxGithub               = pkgGithub
+    , ctxModuleMap            = pkgModuleMap
+    , ctxResolvedDependencies = pkgResolvedDependencies
+    , ctxPackageName          = bowerName pkgMeta
+    , ctxVersion              = pkgVersion
+    , ctxVersionTag           = pkgVersionTag
+    }
+
 ----------------------
 -- Parsing
 
-parseUploadedPackage :: Version -> ByteString -> Either (ParseError PackageError) UploadedPackage
+parseUploadedPackage :: Version -> LByteString -> Either (ParseError PackageError) UploadedPackage
 parseUploadedPackage minVersion = parse $ asUploadedPackage minVersion
 
-parseVerifiedPackage :: Version -> ByteString -> Either (ParseError PackageError) VerifiedPackage
+parseVerifiedPackage :: Version -> LByteString -> Either (ParseError PackageError) VerifiedPackage
 parseVerifiedPackage minVersion = parse $ asVerifiedPackage minVersion
 
 asPackage :: Version -> (forall e. Parse e a) -> Parse PackageError (Package a)
@@ -353,11 +464,15 @@ asPackage minimumVersion uploader = do
           <*> key "versionTag" asText
           <*> keyMay "tagTime" (withString parseTimeEither)
           <*> key "modules" (eachInArray asModule)
-          <*> key "bookmarks" asBookmarks .! ErrorInPackageMeta
+          <*> moduleMap
           <*> key "resolvedDependencies" asResolvedDependencies
           <*> key "github" asGithub
           <*> key "uploader" uploader
           <*> pure compilerVersion
+  where
+  moduleMap =
+    key "moduleMap" asModuleMap
+    `pOr` (key "bookmarks" bookmarksAsModuleMap .! ErrorInPackageMeta)
 
 parseTimeEither :: String -> Either PackageError UTCTime
 parseTimeEither =
@@ -444,9 +559,10 @@ asReExport =
   asReExportModuleName :: Parse PackageError (InPackage P.ModuleName)
   asReExportModuleName =
     asInPackage fromAesonParser .! ErrorInPackageMeta
-    <|> fmap Local fromAesonParser
+    `pOr` fmap Local fromAesonParser
 
-  (<|>) p q = catchError p (const q)
+pOr :: Parse e a -> Parse e a -> Parse e a
+p `pOr` q = catchError p (const q)
 
 asInPackage :: Parse BowerError a -> Parse BowerError (InPackage a)
 asInPackage inner =
@@ -559,20 +675,38 @@ asQualifiedProperName = fromAesonParser
 asQualifiedIdent :: Parse e (P.Qualified P.Ident)
 asQualifiedIdent = fromAesonParser
 
-asBookmarks :: Parse BowerError [Bookmark]
-asBookmarks = eachInArray asBookmark
+asModuleMap :: Parse PackageError (Map P.ModuleName PackageName)
+asModuleMap =
+  Map.fromList <$>
+    eachInObjectWithKey (Right . P.moduleNameFromString)
+                        (withText parsePackageName')
 
-asBookmark :: Parse BowerError Bookmark
-asBookmark =
-  asInPackage ((,) <$> nth 0 (P.moduleNameFromString <$> asText)
-                   <*> nth 1 asText)
+-- This is here to preserve backwards compatibility with compilers which used
+-- to generate a 'bookmarks' field in the JSON (i.e. up to 0.10.5). We should
+-- remove this after the next breaking change to the JSON.
+bookmarksAsModuleMap :: Parse BowerError (Map P.ModuleName PackageName)
+bookmarksAsModuleMap =
+  convert <$>
+    eachInArray (asInPackage (nth 0 (P.moduleNameFromString <$> asText)))
+
+  where
+  convert :: [InPackage P.ModuleName] -> Map P.ModuleName PackageName
+  convert = Map.fromList . mapMaybe toTuple
+
+  toTuple (Local _) = Nothing
+  toTuple (FromDep pkgName mn) = Just (mn, pkgName)
 
 asResolvedDependencies :: Parse PackageError [(PackageName, Version)]
 asResolvedDependencies =
-  eachInObjectWithKey (mapLeft ErrorInPackageMeta . parsePackageName) asVersion
-  where
-  mapLeft f (Left x) = Left (f x)
-  mapLeft _ (Right x) = Right x
+  eachInObjectWithKey parsePackageName' asVersion
+
+parsePackageName' :: Text -> Either PackageError PackageName
+parsePackageName' =
+  mapLeft ErrorInPackageMeta . parsePackageName
+
+mapLeft :: (a -> a') -> Either a b -> Either a' b
+mapLeft f (Left x) = Left (f x)
+mapLeft _ (Right x) = Right x
 
 asGithub :: Parse e (GithubUser, GithubRepo)
 asGithub = (,) <$> nth 0 (GithubUser <$> asText)
@@ -593,7 +727,9 @@ instance A.ToJSON a => A.ToJSON (Package a) where
       , "version"              .= showVersion pkgVersion
       , "versionTag"           .= pkgVersionTag
       , "modules"              .= pkgModules
-      , "bookmarks"            .= map (fmap (first P.runModuleName)) pkgBookmarks
+      , "moduleMap"            .= assocListToJSON P.runModuleName
+                                                  runPackageName
+                                                  (Map.toList pkgModuleMap)
       , "resolvedDependencies" .= assocListToJSON runPackageName
                                                   (T.pack . showVersion)
                                                   pkgResolvedDependencies

@@ -29,6 +29,7 @@ import           "monad-logger" Control.Monad.Logger
 import qualified Data.Text.IO                      as T
 import qualified Data.ByteString.Lazy.Char8        as BS8
 import           Data.Version                      (showVersion)
+import           GHC.IO.Exception                  (IOErrorType(..), IOException(..))
 import           Language.PureScript.Ide
 import           Language.PureScript.Ide.Command
 import           Language.PureScript.Ide.Util
@@ -130,9 +131,9 @@ startServer port env = withSocketsDo $ do
   where
     loop :: (Ide m, MonadLogger m) => Socket -> m ()
     loop sock = do
-      accepted <- runExceptT $ acceptCommand sock
+      accepted <- runExceptT (acceptCommand sock)
       case accepted of
-        Left err -> $(logDebug) err
+        Left err -> $(logError) err
         Right (cmd, h) -> do
           case decodeT cmd of
             Just cmd' -> do
@@ -144,14 +145,21 @@ startServer port env = withSocketsDo $ do
               -- $(logDebug) ("Answer was: " <> T.pack (show result))
               liftIO (hFlush stdout)
               case result of
-                Right r  -> liftIO $ BS8.hPutStrLn h (Aeson.encode r)
-                Left err -> liftIO $ BS8.hPutStrLn h (Aeson.encode err)
+                Right r  -> liftIO $ catchGoneHandle (BS8.hPutStrLn h (Aeson.encode r))
+                Left err -> liftIO $ catchGoneHandle (BS8.hPutStrLn h (Aeson.encode err))
             Nothing -> do
-              $(logDebug) ("Parsing the command failed. Command: " <> cmd)
+              $(logError) ("Parsing the command failed. Command: " <> cmd)
               liftIO $ do
-                T.hPutStrLn h (encodeT (GeneralError "Error parsing Command."))
+                catchGoneHandle (T.hPutStrLn h (encodeT (GeneralError "Error parsing Command.")))
                 hFlush stdout
-          liftIO (hClose h)
+          liftIO $ catchGoneHandle (hClose h)
+
+catchGoneHandle :: IO () -> IO ()
+catchGoneHandle =
+  handle (\e -> case e of
+    IOError { ioe_type = ResourceVanished } ->
+      putText ("[Error] psc-ide-server tried interact with the handle, but the connection was already gone.")
+    _ -> throwIO e)
 
 acceptCommand :: (MonadIO m, MonadLogger m, MonadError Text m)
                  => Socket -> m (Text, Handle)
@@ -167,7 +175,7 @@ acceptCommand sock = do
   case cmd' of
     Nothing -> throwError "Connection was closed before any input arrived"
     Just cmd -> do
-      $(logDebug) cmd
+      $(logDebug) ("Received command: " <> cmd)
       pure (cmd, h)
   where
    acceptConnection = liftIO $ do

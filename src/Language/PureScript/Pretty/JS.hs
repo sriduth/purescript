@@ -122,22 +122,30 @@ literals = mkPattern' match'
     [ return $ emit $ lbl <> ": "
     , prettyPrintJS' js
     ]
-  match (JSComment _ com js) = fmap mconcat $ sequence $
+  match (JSComment _ com js) = mconcat <$> sequence
+    [ mconcat <$> forM com comment
+    , prettyPrintJS' js
+    ]
+  match (JSRaw _ js) = return $ emit js
+  match _ = mzero
+
+  comment :: (Emit gen) => Comment -> StateT PrinterState Maybe gen
+  comment (LineComment com) = fmap mconcat $ sequence $
+    [ return $ emit "\n"
+    , currentIndent
+    , return $ emit "//" <> emit com <> emit "\n"
+    ]
+  comment (BlockComment com) = fmap mconcat $ sequence $
     [ return $ emit "\n"
     , currentIndent
     , return $ emit "/**\n"
     ] ++
-    map asLine (concatMap commentLines com) ++
+    map asLine (T.lines com) ++
     [ currentIndent
     , return $ emit " */\n"
     , currentIndent
-    , prettyPrintJS' js
     ]
     where
-    commentLines :: Comment -> [Text]
-    commentLines (LineComment s) = [s]
-    commentLines (BlockComment s) = T.lines s
-
     asLine :: (Emit gen) => Text -> StateT PrinterState Maybe gen
     asLine s = do
       i <- currentIndent
@@ -150,8 +158,6 @@ literals = mkPattern' match'
         Nothing -> case T.uncons t of
           Just (x, xs) -> x `T.cons` removeComments xs
           Nothing -> ""
-  match (JSRaw _ js) = return $ emit js
-  match _ = mzero
 
 conditional :: Pattern PrinterState JS ((Maybe SourceSpan, JS, JS), JS)
 conditional = mkPattern match
@@ -159,11 +165,13 @@ conditional = mkPattern match
   match (JSConditional ss cond th el) = Just ((ss, th, el), cond)
   match _ = Nothing
 
-accessor :: (Emit gen) => Pattern PrinterState JS (gen, JS)
+accessor :: Pattern PrinterState JS (Text, JS)
 accessor = mkPattern match
   where
-  -- WARN: if `prop` does not match the `IdentifierName` grammar, this will generate invalid code; see #2513
-  match (JSAccessor _ prop val) = Just (emit prop, val)
+  match (JSIndexer _ (JSStringLiteral _ prop) val) =
+    case decodeString prop of
+      Just s | not (identNeedsEscaping s) -> Just (s, val)
+      _ -> Nothing
   match _ = Nothing
 
 indexer :: (Emit gen) => Pattern PrinterState JS (gen, JS)
@@ -257,8 +265,8 @@ prettyPrintJS' = A.runKleisli $ runPattern matchValue
   matchValue = buildPrettyPrinter operators (literals <+> fmap parensPos matchValue)
   operators :: (Emit gen) => OperatorTable PrinterState JS gen
   operators =
-    OperatorTable [ [ Wrap accessor $ \prop val -> val <> emit "." <> prop ]
-                  , [ Wrap indexer $ \index val -> val <> emit "[" <> index <> emit "]" ]
+    OperatorTable [ [ Wrap indexer $ \index val -> val <> emit "[" <> index <> emit "]" ]
+                  , [ Wrap accessor $ \prop val -> val <> emit "." <> emit prop ]
                   , [ Wrap app $ \args val -> val <> emit "(" <> args <> emit ")" ]
                   , [ unary JSNew "new " ]
                   , [ Wrap lam $ \(name, args, ss) ret -> addMapping' ss <>

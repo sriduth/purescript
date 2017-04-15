@@ -28,13 +28,13 @@ import           Data.Aeson (decodeStrict)
 import qualified Data.ByteString as BS
 import qualified Data.Map as Map
 import           Data.Version (showVersion)
-import           Language.PureScript.Ide.Error (PscIdeError (..))
+import           Language.PureScript.Ide.Error (IdeError (..))
 import           Language.PureScript.Ide.Types
 import           Language.PureScript.Ide.Util
 
 import qualified Language.PureScript as P
 
-readExternFile :: (MonadIO m, MonadError PscIdeError m, MonadLogger m) =>
+readExternFile :: (MonadIO m, MonadError IdeError m, MonadLogger m) =>
                   FilePath -> m P.ExternsFile
 readExternFile fp = do
    parseResult <- liftIO (decodeStrict <$> BS.readFile fp)
@@ -54,9 +54,9 @@ readExternFile fp = do
      where
        version = toS (showVersion P.version)
 
-convertExterns :: P.ExternsFile -> (Module, [(P.ModuleName, P.DeclarationRef)])
+convertExterns :: P.ExternsFile -> ([IdeDeclarationAnn], [(P.ModuleName, P.DeclarationRef)])
 convertExterns ef =
-  ((P.efModuleName ef, decls), exportDecls)
+  (decls, exportDecls)
   where
     decls = map
       (IdeDeclarationAnn emptyAnn)
@@ -71,8 +71,10 @@ convertExterns ef =
 
 removeTypeDeclarationsForClass :: IdeDeclaration -> Endo [IdeDeclaration]
 removeTypeDeclarationsForClass (IdeDeclTypeClass n) = Endo (filter notDuplicate)
-  where notDuplicate (IdeDeclType t) = n ^. properNameT /= t ^. ideTypeName . properNameT
-        notDuplicate (IdeDeclTypeSynonym s) = n ^. properNameT /= s ^. ideSynonymName . properNameT
+  where notDuplicate (IdeDeclType t) =
+          n ^. ideTCName . properNameT /= t ^. ideTypeName . properNameT
+        notDuplicate (IdeDeclTypeSynonym s) =
+          n ^. ideTCName . properNameT /= s ^. ideSynonymName . properNameT
         notDuplicate _ = True
 removeTypeDeclarationsForClass _ = mempty
 
@@ -88,12 +90,13 @@ convertDecl :: P.ExternsDeclaration -> Maybe IdeDeclaration
 convertDecl P.EDType{..} = Just $ IdeDeclType $
   IdeType edTypeName edTypeKind
 convertDecl P.EDTypeSynonym{..} = Just $ IdeDeclTypeSynonym
-  (IdeSynonym edTypeSynonymName edTypeSynonymType)
+  (IdeTypeSynonym edTypeSynonymName edTypeSynonymType)
 convertDecl P.EDDataConstructor{..} = Just $ IdeDeclDataConstructor $
   IdeDataConstructor edDataCtorName edDataCtorTypeCtor edDataCtorType
 convertDecl P.EDValue{..} = Just $ IdeDeclValue $
   IdeValue edValueName edValueType
-convertDecl P.EDClass{..} = Just (IdeDeclTypeClass edClassName)
+convertDecl P.EDClass{..} = Just $ IdeDeclTypeClass $
+  IdeTypeClass edClassName []
 convertDecl P.EDKind{..} = Just (IdeDeclKind edKindName)
 convertDecl P.EDInstance{} = Nothing
 
@@ -117,10 +120,10 @@ convertTypeOperator P.ExternsTypeFixity{..} =
 
 annotateModule
   :: (DefinitionSites P.SourceSpan, TypeAnnotations)
-  -> Module
-  -> Module
-annotateModule (defs, types) (moduleName, decls) =
-  (moduleName, map convertDeclaration decls)
+  -> [IdeDeclarationAnn]
+  -> [IdeDeclarationAnn]
+annotateModule (defs, types) decls =
+  map convertDeclaration decls
   where
     convertDeclaration :: IdeDeclarationAnn -> IdeDeclarationAnn
     convertDeclaration (IdeDeclarationAnn ann d) = case d of
@@ -132,12 +135,12 @@ annotateModule (defs, types) (moduleName, decls) =
         annotateType (s ^. ideSynonymName . properNameT) (IdeDeclTypeSynonym s)
       IdeDeclDataConstructor dtor ->
         annotateValue (dtor ^. ideDtorName . properNameT) (IdeDeclDataConstructor dtor)
-      IdeDeclTypeClass i ->
-        annotateType (i ^. properNameT) (IdeDeclTypeClass i)
+      IdeDeclTypeClass tc ->
+        annotateType (tc ^. ideTCName . properNameT) (IdeDeclTypeClass tc)
       IdeDeclValueOperator op ->
-        annotateValue (op ^. ideValueOpAlias & valueOperatorAliasT) (IdeDeclValueOperator op)
+        annotateValue (op ^. ideValueOpName . opNameT) (IdeDeclValueOperator op)
       IdeDeclTypeOperator op ->
-        annotateType (op ^. ideTypeOpAlias & typeOperatorAliasT) (IdeDeclTypeOperator op)
+        annotateType (op ^. ideTypeOpName . opNameT) (IdeDeclTypeOperator op)
       IdeDeclKind i ->
         annotateKind (i ^. properNameT) (IdeDeclKind i)
       where

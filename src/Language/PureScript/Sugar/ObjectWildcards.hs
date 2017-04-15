@@ -3,19 +3,20 @@ module Language.PureScript.Sugar.ObjectWildcards
   , desugarDecl
   ) where
 
-import Prelude.Compat
+import           Prelude.Compat
 
-import Control.Monad (forM)
-import Control.Monad.Error.Class (MonadError(..))
-import Control.Monad.Supply.Class
+import           Control.Monad (forM)
+import           Control.Monad.Error.Class (MonadError(..))
+import           Control.Monad.Supply.Class
+import           Data.Foldable (toList)
+import           Data.List (foldl')
+import           Data.Maybe (catMaybes)
+import           Language.PureScript.AST
+import           Language.PureScript.Environment (NameKind(..))
+import           Language.PureScript.Errors
+import           Language.PureScript.Names
+import           Language.PureScript.PSString (PSString)
 
-import Data.List (partition)
-import Data.Maybe (catMaybes)
-
-import Language.PureScript.AST
-import Language.PureScript.Errors
-import Language.PureScript.Names
-import Language.PureScript.PSString (PSString)
 
 desugarObjectConstructors
   :: forall m
@@ -41,11 +42,8 @@ desugarDecl other = fn other
     , BinaryNoParens op u val <- b'
     , isAnonymousArgument u = do arg <- freshIdent'
                                  return $ Abs (Left arg) $ App (App op (Var (Qualified Nothing arg))) val
-  desugarExpr (Literal (ObjectLiteral ps)) = wrapLambda (Literal . ObjectLiteral) ps
-  desugarExpr (ObjectUpdate u ps) | isAnonymousArgument u = do
-    obj <- freshIdent'
-    Abs (Left obj) <$> wrapLambda (ObjectUpdate (argToExpr obj)) ps
-  desugarExpr (ObjectUpdate obj ps) = wrapLambda (ObjectUpdate obj) ps
+  desugarExpr (Literal (ObjectLiteral ps)) = wrapLambdaAssoc (Literal . ObjectLiteral) ps
+  desugarExpr (ObjectUpdateNested obj ps) = transformNestedUpdate obj ps
   desugarExpr (Accessor prop u)
     | Just props <- peelAnonAccessorChain u = do
       arg <- freshIdent'
@@ -62,14 +60,42 @@ desugarDecl other = fn other
     return $ foldr (Abs . Left) if_ (catMaybes [u', t', f'])
   desugarExpr e = return e
 
-  wrapLambda :: ([(PSString, Expr)] -> Expr) -> [(PSString, Expr)] -> m Expr
-  wrapLambda mkVal ps =
-    let (args, props) = partition (isAnonymousArgument . snd) ps
-    in if null args
-       then return $ mkVal props
-       else do
-        (args', ps') <- unzip <$> mapM mkProp ps
-        return $ foldr (Abs . Left) (mkVal ps') (catMaybes args')
+  transformNestedUpdate :: Expr -> PathTree Expr -> m Expr
+  transformNestedUpdate obj ps = do
+    -- If we don't have an anonymous argument then we need to generate a let wrapper
+    -- so that the object expression isn't re-evaluated for each nested update.
+    val <- freshIdent'
+    let valExpr = argToExpr val
+    if isAnonymousArgument obj
+      then Abs (Left val) <$> wrapLambda (buildUpdates valExpr) ps
+      else wrapLambda (buildLet val . buildUpdates valExpr) ps
+    where
+      buildLet val = Let [ValueDeclaration val Public [] (Right obj)]
+
+      -- recursively build up the nested `ObjectUpdate` expressions
+      buildUpdates :: Expr -> PathTree Expr -> Expr
+      buildUpdates val (PathTree vs) = ObjectUpdate val (goLayer [] <$> runAssocList vs) where
+        goLayer :: [PSString] -> (PSString, PathNode Expr) -> (PSString, Expr)
+        goLayer _ (key, Leaf expr) = (key, expr)
+        goLayer path (key, Branch (PathTree branch)) =
+          let path' = path ++ [key]
+              updates = goLayer path' <$> runAssocList branch
+              accessor = foldl' (flip Accessor) val path'
+              objectUpdate = ObjectUpdate accessor updates
+          in (key, objectUpdate)
+
+  wrapLambda :: forall t. Traversable t => (t Expr -> Expr) -> t Expr -> m Expr
+  wrapLambda mkVal ps = do
+    args <- traverse processExpr ps
+    return $ foldr (Abs . Left) (mkVal (snd <$> args)) (catMaybes $ toList (fst <$> args))
+    where
+      processExpr :: Expr -> m (Maybe Ident, Expr)
+      processExpr e = do
+        arg <- freshIfAnon e
+        return (arg, maybe e argToExpr arg)
+
+  wrapLambdaAssoc :: ([(PSString, Expr)] -> Expr) -> [(PSString, Expr)] -> m Expr
+  wrapLambdaAssoc mkVal = wrapLambda (mkVal . runAssocList) . AssocList
 
   stripPositionInfo :: Expr -> Expr
   stripPositionInfo (PositionedValue _ _ e) = stripPositionInfo e
@@ -85,11 +111,6 @@ desugarDecl other = fn other
   isAnonymousArgument AnonymousArgument = True
   isAnonymousArgument (PositionedValue _ _ e) = isAnonymousArgument e
   isAnonymousArgument _ = False
-
-  mkProp :: (PSString, Expr) -> m (Maybe Ident, (PSString, Expr))
-  mkProp (name, e) = do
-    arg <- freshIfAnon e
-    return (arg, (name, maybe e argToExpr arg))
 
   freshIfAnon :: Expr -> m (Maybe Ident)
   freshIfAnon u
