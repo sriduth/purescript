@@ -67,7 +67,9 @@ import qualified Language.PureScript.CodeGen.Erl.Constants as EC
 
 -- -- fun (X) -> fun {body} end(X) end  --> fun {body} end
 evaluateIifes :: Erl -> Erl
-evaluateIifes = everywhereOnErl convert
+evaluateIifes = id
+  -- TODO: Re-enable this when proper occurs check is added
+  -- everywhereOnErl convert
   where
   convert :: Erl -> Erl
   -- TODO: check var does not occur in fun
