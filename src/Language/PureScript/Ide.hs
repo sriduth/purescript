@@ -56,8 +56,8 @@ handleCommand c = case c of
     loadModulesSync modules
   Type search filters currentModule ->
     findType search filters currentModule
-  Complete filters matcher currentModule ->
-    findCompletions filters matcher currentModule
+  Complete filters matcher currentModule complOptions ->
+    findCompletions filters matcher currentModule complOptions
   Pursuit query Package ->
     findPursuitPackages query
   Pursuit query Identifier ->
@@ -67,7 +67,7 @@ handleCommand c = case c of
   List AvailableModules ->
     listAvailableModules
   List (Imports fp) ->
-    ImportList <$> getImportsForFile fp
+    ImportList <$> parseImportsFromFile fp
   CaseSplit l b e wca t ->
     caseSplit l b e wca t
   AddClause l wca ->
@@ -75,12 +75,15 @@ handleCommand c = case c of
   Import fp outfp _ (AddImplicitImport mn) -> do
     rs <- addImplicitImport fp mn
     answerRequest outfp rs
+  Import fp outfp _ (AddQualifiedImport mn qual) -> do
+    rs <- addQualifiedImport fp mn qual
+    answerRequest outfp rs
   Import fp outfp filters (AddImportForIdentifier ident) -> do
     rs <- addImportForIdentifier fp ident filters
     case rs of
       Right rs' -> answerRequest outfp rs'
       Left question ->
-        pure (CompletionResult (map (completionFromMatch . map withEmptyAnn) question))
+        pure (CompletionResult (map (completionFromMatch . simpleExport . map withEmptyAnn) question))
   Rebuild file ->
     rebuildFileAsync file
   RebuildSync file ->
@@ -92,17 +95,22 @@ handleCommand c = case c of
   Quit ->
     liftIO exitSuccess
 
-findCompletions :: Ide m =>
-                   [Filter] -> Matcher IdeDeclarationAnn -> Maybe P.ModuleName -> m Success
-findCompletions filters matcher currentModule = do
+findCompletions
+  :: Ide m
+  => [Filter]
+  -> Matcher IdeDeclarationAnn
+  -> Maybe P.ModuleName
+  -> CompletionOptions
+  -> m Success
+findCompletions filters matcher currentModule complOptions = do
   modules <- getAllModules currentModule
-  pure . CompletionResult . map completionFromMatch . getCompletions filters matcher $ modules
+  pure (CompletionResult (getCompletions filters matcher complOptions modules))
 
 findType :: Ide m =>
             Text -> [Filter] -> Maybe P.ModuleName -> m Success
 findType search filters currentModule = do
   modules <- getAllModules currentModule
-  pure . CompletionResult . map completionFromMatch . getExactMatches search filters $ modules
+  pure (CompletionResult (getExactCompletions search filters modules))
 
 findPursuitCompletions :: MonadIO m =>
                           PursuitQuery -> m Success
@@ -167,7 +175,7 @@ findAllSourceFiles = do
 -- | Looks up the ExternsFiles for the given Modulenames and loads them into the
 -- server state. Then proceeds to parse all the specified sourcefiles and
 -- inserts their ASTs into the state. Finally kicks off an async worker, which
--- populates Stage 2 and 3 of the state.
+-- populates the VolatileState.
 loadModulesAsync
   :: (Ide m, MonadError IdeError m, MonadLogger m)
   => [P.ModuleName]
@@ -179,9 +187,9 @@ loadModulesAsync moduleNames = do
   -- successfully parsed modules.
   env <- ask
   let ll = confLogLevel (ideConfiguration env)
-  -- populateStage2 and 3 return Unit for now, so it's fine to discard this
+  -- populateVolatileState return Unit for now, so it's fine to discard this
   -- result. We might want to block on this in a benchmarking situation.
-  _ <- liftIO (async (runLogger ll (runReaderT (populateStage2 *> populateStage3) env)))
+  _ <- liftIO (async (runLogger ll (runReaderT populateVolatileState env)))
   pure tr
 
 loadModulesSync
@@ -190,7 +198,7 @@ loadModulesSync
   -> m Success
 loadModulesSync moduleNames = do
   tr <- loadModules moduleNames
-  populateStage2 *> populateStage3
+  populateVolatileState
   pure tr
 
 loadModules
@@ -208,7 +216,7 @@ loadModules moduleNames = do
   -- We parse all source files, log eventual parse failures and insert the
   -- successful parses into the state.
   (failures, allModules) <-
-    partitionEithers <$> (traverse parseModule =<< findAllSourceFiles)
+    partitionEithers <$> (parseModulesFromFiles =<< findAllSourceFiles)
   unless (null failures) $
     $(logWarn) ("Failed to parse: " <> show failures)
   traverse_ insertModule allModules

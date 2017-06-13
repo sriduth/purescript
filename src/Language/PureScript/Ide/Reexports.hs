@@ -68,30 +68,35 @@ resolveReexports
 resolveReexports reexportRefs modules =
   Map.mapWithKey (\moduleName decls ->
                     maybe (ReexportResult decls [])
-                      (resolveReexports' modules decls)
+                      (map (decls <>) . resolveReexports' modules)
                       (Map.lookup moduleName reexportRefs)) modules
 
 resolveReexports'
   :: ModuleMap [IdeDeclarationAnn]
-  -> [IdeDeclarationAnn]
   -> [(P.ModuleName, P.DeclarationRef)]
   -> ReexportResult [IdeDeclarationAnn]
-resolveReexports' modules decls refs =
-  ReexportResult (decls <> concat resolvedRefs) failedRefs
+resolveReexports' modules refs =
+  ReexportResult (concat resolvedRefs) failedRefs
   where
     (failedRefs, resolvedRefs) = partitionEithers (resolveRef' <$> refs)
     resolveRef' x@(mn, r) = case Map.lookup mn modules of
       Nothing -> Left x
-      Just decls' -> first (mn,) (resolveRef decls' r)
+      Just decls' ->
+        let
+          setExportedFrom = set (idaAnnotation.annExportedFrom) . Just
+        in
+          bimap (mn,) (map (setExportedFrom mn)) (resolveRef decls' r)
 
 resolveRef
   :: [IdeDeclarationAnn]
   -> P.DeclarationRef
   -> Either P.DeclarationRef [IdeDeclarationAnn]
 resolveRef decls ref = case ref of
-  P.TypeRef tn mdtors ->
-    case findRef (anyOf (_IdeDeclType . ideTypeName) (== tn)) of
-      Nothing -> Left ref
+  P.TypeRef _ tn mdtors ->
+    case findRef (anyOf (_IdeDeclType . ideTypeName) (== tn))
+         <|> findRef (anyOf (_IdeDeclTypeSynonym . ideSynonymName) (== tn)) of
+      Nothing ->
+        Left ref
       Just d -> Right $ d : case mdtors of
           Nothing ->
             -- If the dataconstructor field inside the TypeRef is Nothing, that
@@ -99,14 +104,16 @@ resolveRef decls ref = case ref of
             -- those up ourselfes
             findDtors tn
           Just dtors -> mapMaybe lookupDtor dtors
-  P.ValueRef i ->
+  P.ValueRef _ i ->
     findWrapped (anyOf (_IdeDeclValue . ideValueIdent) (== i))
-  P.ValueOpRef name ->
+  P.ValueOpRef _ name ->
     findWrapped (anyOf (_IdeDeclValueOperator . ideValueOpName) (== name))
-  P.TypeOpRef name ->
+  P.TypeOpRef _ name ->
     findWrapped (anyOf (_IdeDeclTypeOperator . ideTypeOpName) (== name))
-  P.TypeClassRef name ->
+  P.TypeClassRef _ name ->
     findWrapped (anyOf (_IdeDeclTypeClass . ideTCName) (== name))
+  P.KindRef _ name ->
+    findWrapped (anyOf _IdeDeclKind (== name))
   _ ->
     Left ref
   where

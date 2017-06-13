@@ -17,14 +17,14 @@ import           System.Process
 
 import qualified Language.PureScript             as P
 
-defConfig :: Configuration
+defConfig :: IdeConfiguration
 defConfig =
-  Configuration { confLogLevel = LogNone
+  IdeConfiguration { confLogLevel = LogNone
                 , confOutputPath = "output/"
                 , confGlobs = ["src/*.purs"]
                 }
 
-runIde' :: Configuration -> IdeState -> [Command] -> IO ([Either IdeError Success], IdeState)
+runIde' :: IdeConfiguration -> IdeState -> [Command] -> IO ([Either IdeError Success], IdeState)
 runIde' conf s cs = do
   stateVar <- newTVarIO s
   let env' = IdeEnvironment {ideStateVar = stateVar, ideConfiguration = conf}
@@ -35,11 +35,11 @@ runIde' conf s cs = do
 runIde :: [Command] -> IO ([Either IdeError Success], IdeState)
 runIde = runIde' defConfig emptyIdeState
 
-s3 :: IdeState -> [(Text, [IdeDeclarationAnn])] -> IdeState
-s3 s ds =
-  s {ideStage3 = stage3}
+volatileState :: IdeState -> [(Text, [IdeDeclarationAnn])] -> IdeState
+volatileState s ds =
+  s {ideVolatileState = vs}
   where
-    stage3 = Stage3 (Map.fromList decls) Nothing
+    vs = IdeVolatileState (AstData Map.empty) (Map.fromList decls) Nothing
     decls = map (first P.moduleNameFromString) ds
 
 -- | Adding Annotations to IdeDeclarations
@@ -47,13 +47,13 @@ ann :: IdeDeclarationAnn -> Annotation -> IdeDeclarationAnn
 ann (IdeDeclarationAnn _ d) a = IdeDeclarationAnn a d
 
 annLoc :: IdeDeclarationAnn -> P.SourceSpan -> IdeDeclarationAnn
-annLoc (IdeDeclarationAnn a d) loc = IdeDeclarationAnn a {annLocation = Just loc} d
+annLoc (IdeDeclarationAnn a d) loc = IdeDeclarationAnn a {_annLocation = Just loc} d
 
-annExp :: IdeDeclarationAnn -> P.ModuleName -> IdeDeclarationAnn
-annExp (IdeDeclarationAnn a d) e = IdeDeclarationAnn a {annExportedFrom = Just e} d
+annExp :: IdeDeclarationAnn -> Text -> IdeDeclarationAnn
+annExp (IdeDeclarationAnn a d) e = IdeDeclarationAnn a {_annExportedFrom = Just (mn e)} d
 
 annTyp :: IdeDeclarationAnn -> P.Type -> IdeDeclarationAnn
-annTyp (IdeDeclarationAnn a d) ta = IdeDeclarationAnn a {annTypeAnnotation = Just ta} d
+annTyp (IdeDeclarationAnn a d) ta = IdeDeclarationAnn a {_annTypeAnnotation = Just ta} d
 
 
 ida :: IdeDeclaration -> IdeDeclarationAnn
@@ -66,11 +66,11 @@ ideValue i ty = ida (IdeDeclValue (IdeValue (P.Ident i) (fromMaybe P.tyString ty
 ideType :: Text -> Maybe P.Kind -> IdeDeclarationAnn
 ideType pn ki = ida (IdeDeclType (IdeType (P.ProperName pn) (fromMaybe P.kindType ki)))
 
-ideSynonym :: Text -> P.Type -> IdeDeclarationAnn
-ideSynonym pn ty = ida (IdeDeclTypeSynonym (IdeTypeSynonym (P.ProperName pn) ty))
+ideSynonym :: Text -> Maybe P.Type -> Maybe P.Kind -> IdeDeclarationAnn
+ideSynonym pn ty kind = ida (IdeDeclTypeSynonym (IdeTypeSynonym (P.ProperName pn) (fromMaybe P.tyString ty) (fromMaybe P.kindType kind)))
 
-ideTypeClass :: Text -> [IdeInstance] -> IdeDeclarationAnn
-ideTypeClass pn instances = ida (IdeDeclTypeClass (IdeTypeClass (P.ProperName pn) instances))
+ideTypeClass :: Text -> P.Kind -> [IdeInstance] -> IdeDeclarationAnn
+ideTypeClass pn kind instances = ida (IdeDeclTypeClass (IdeTypeClass (P.ProperName pn) kind instances))
 
 ideDtor :: Text -> Text -> Maybe P.Type -> IdeDeclarationAnn
 ideDtor pn tn ty = ida (IdeDeclDataConstructor (IdeDataConstructor (P.ProperName pn) (P.ProperName tn) (fromMaybe P.tyString ty)))
@@ -112,7 +112,7 @@ inProject f = do
 compileTestProject :: IO Bool
 compileTestProject = inProject $ do
   (_, _, _, procHandle) <-
-    createProcess $ (shell $ "psc \"src/**/*.purs\"")
+    createProcess $ (shell $ "purs compile \"src/**/*.purs\"")
   r <- tryNTimes 10 (getProcessExitCode procHandle)
   pure (fromMaybe False (isSuccess <$> r))
 

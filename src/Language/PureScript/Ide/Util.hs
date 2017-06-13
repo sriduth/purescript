@@ -16,15 +16,13 @@ module Language.PureScript.Ide.Util
   ( identifierFromIdeDeclaration
   , unwrapMatch
   , unwrapPositioned
-  , unwrapPositionedRef
-  , completionFromMatch
+  , namespaceForDeclaration
   , encodeT
   , decodeT
   , discardAnn
   , withEmptyAnn
   , valueOperatorAliasT
   , typeOperatorAliasT
-  , prettyTypeT
   , properNameT
   , identT
   , opNameT
@@ -39,12 +37,12 @@ import           Control.Lens                        hiding ((&), op)
 import           Data.Aeson
 import qualified Data.Text                           as T
 import qualified Data.Text.Lazy                      as TL
-import           Data.Text.Lazy.Encoding             (decodeUtf8, encodeUtf8)
+import           Data.Text.Lazy.Encoding             as TLE
 import qualified Language.PureScript                 as P
-import           Language.PureScript.Ide.Error
+import           Language.PureScript.Ide.Error       (IdeError(..))
 import           Language.PureScript.Ide.Logging
 import           Language.PureScript.Ide.Types
-import           System.IO.UTF8                  (readUTF8FileT)
+import           System.IO.UTF8                      (readUTF8FileT)
 
 identifierFromIdeDeclaration :: IdeDeclaration -> Text
 identifierFromIdeDeclaration d = case d of
@@ -57,6 +55,17 @@ identifierFromIdeDeclaration d = case d of
   IdeDeclTypeOperator op -> op ^. ideTypeOpName & P.runOpName
   IdeDeclKind name -> P.runProperName name
 
+namespaceForDeclaration :: IdeDeclaration -> IdeNamespace
+namespaceForDeclaration d = case d of
+  IdeDeclValue _ -> IdeNSValue
+  IdeDeclType _ -> IdeNSType
+  IdeDeclTypeSynonym _ -> IdeNSType
+  IdeDeclDataConstructor _ -> IdeNSValue
+  IdeDeclTypeClass _ -> IdeNSType
+  IdeDeclValueOperator _ -> IdeNSValue
+  IdeDeclTypeOperator _ -> IdeNSType
+  IdeDeclKind _ -> IdeNSKind
+
 discardAnn :: IdeDeclarationAnn -> IdeDeclaration
 discardAnn (IdeDeclarationAnn _ d) = d
 
@@ -65,37 +74,6 @@ withEmptyAnn = IdeDeclarationAnn emptyAnn
 
 unwrapMatch :: Match a -> a
 unwrapMatch (Match (_, ed)) = ed
-
-completionFromMatch :: Match IdeDeclarationAnn -> Completion
-completionFromMatch (Match (m, IdeDeclarationAnn ann decl)) =
-  Completion {..}
-  where
-    (complIdentifier, complExpandedType) = case decl of
-      IdeDeclValue v -> (v ^. ideValueIdent . identT, v ^. ideValueType & prettyTypeT)
-      IdeDeclType t -> (t ^. ideTypeName . properNameT, t ^. ideTypeKind & P.prettyPrintKind)
-      IdeDeclTypeSynonym s -> (s ^. ideSynonymName . properNameT, s ^. ideSynonymType & prettyTypeT)
-      IdeDeclDataConstructor d -> (d ^. ideDtorName . properNameT, d ^. ideDtorType & prettyTypeT)
-      IdeDeclTypeClass d -> (d ^. ideTCName . properNameT, "type class")
-      IdeDeclValueOperator (IdeValueOperator op ref precedence associativity typeP) ->
-        (P.runOpName op, maybe (showFixity precedence associativity (valueOperatorAliasT ref) op) prettyTypeT typeP)
-      IdeDeclTypeOperator (IdeTypeOperator op ref precedence associativity kind) ->
-        (P.runOpName op, maybe (showFixity precedence associativity (typeOperatorAliasT ref) op) P.prettyPrintKind kind)
-      IdeDeclKind k -> (P.runProperName k, "kind")
-
-    complModule = P.runModuleName m
-
-    complType = maybe complExpandedType prettyTypeT (annTypeAnnotation ann)
-
-    complLocation = annLocation ann
-
-    complDocumentation = Nothing
-
-    showFixity p a r o =
-      let asso = case a of
-            P.Infix -> "infix"
-            P.Infixl -> "infixl"
-            P.Infixr -> "infixr"
-      in T.unwords [asso, show p, r, "as", P.runOpName o]
 
 valueOperatorAliasT
   :: P.Qualified (Either P.Ident (P.ProperName 'P.ConstructorName)) -> Text
@@ -108,18 +86,14 @@ typeOperatorAliasT i =
   P.showQualified P.runProperName i
 
 encodeT :: (ToJSON a) => a -> Text
-encodeT = TL.toStrict . decodeUtf8 . encode
+encodeT = TL.toStrict . TLE.decodeUtf8 . encode
 
 decodeT :: (FromJSON a) => Text -> Maybe a
-decodeT = decode . encodeUtf8 . TL.fromStrict
+decodeT = decode . TLE.encodeUtf8 . TL.fromStrict
 
 unwrapPositioned :: P.Declaration -> P.Declaration
 unwrapPositioned (P.PositionedDeclaration _ _ x) = unwrapPositioned x
 unwrapPositioned x = x
-
-unwrapPositionedRef :: P.DeclarationRef -> P.DeclarationRef
-unwrapPositionedRef (P.PositionedDeclarationRef _ _ x) = unwrapPositionedRef x
-unwrapPositionedRef x = x
 
 properNameT :: Iso' (P.ProperName a) Text
 properNameT = iso P.runProperName P.ProperName
@@ -130,18 +104,17 @@ identT = iso P.runIdent P.Ident
 opNameT :: Iso' (P.OpName a) Text
 opNameT = iso P.runOpName P.OpName
 
-ideReadFile :: (MonadIO m, MonadError IdeError m) => FilePath -> m Text
-ideReadFile fp = do
-  contents :: Either IOException Text <- liftIO (try (readUTF8FileT fp))
+ideReadFile'
+  :: (MonadIO m, MonadError IdeError m)
+  => (FilePath -> IO Text)
+  -> FilePath
+  -> m Text
+ideReadFile' fileReader fp = do
+  contents :: Either IOException Text <- liftIO (try (fileReader fp))
   either
     (\_ -> throwError (GeneralError ("Couldn't find file at: " <> T.pack fp)))
     pure
     contents
 
-prettyTypeT :: P.Type -> Text
-prettyTypeT =
-  T.unwords
-  . map T.strip
-  . T.lines
-  . T.pack
-  . P.prettyPrintTypeWithUnicode
+ideReadFile :: (MonadIO m, MonadError IdeError m) => FilePath -> m Text
+ideReadFile = ideReadFile' readUTF8FileT

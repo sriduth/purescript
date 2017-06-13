@@ -19,6 +19,7 @@ import           Protolude
 import           Data.Aeson
 import qualified Language.PureScript               as P
 import           Language.PureScript.Ide.CaseSplit
+import           Language.PureScript.Ide.Completion
 import           Language.PureScript.Ide.Filter
 import           Language.PureScript.Ide.Matcher
 import           Language.PureScript.Ide.Types
@@ -35,6 +36,7 @@ data Command
       { completeFilters       :: [Filter]
       , completeMatcher       :: Matcher IdeDeclarationAnn
       , completeCurrentModule :: Maybe P.ModuleName
+      , completeOptions       :: CompletionOptions
       }
     | Pursuit
       { pursuitQuery      :: PursuitQuery
@@ -79,6 +81,7 @@ commandName c = case c of
 
 data ImportCommand
   = AddImplicitImport P.ModuleName
+  | AddQualifiedImport P.ModuleName P.ModuleName
   | AddImportForIdentifier Text
   deriving (Show, Eq)
 
@@ -88,6 +91,10 @@ instance FromJSON ImportCommand where
     case command of
       "addImplicitImport" ->
         AddImplicitImport <$> (P.moduleNameFromString <$> o .: "module")
+      "addQualifiedImport" ->
+        AddQualifiedImport
+          <$> (P.moduleNameFromString <$> o .: "module")
+          <*> (P.moduleNameFromString <$> o .: "qualifier")
       "addImport" ->
         AddImportForIdentifier <$> o .: "identifier"
       _ -> mzero
@@ -129,6 +136,7 @@ instance FromJSON Command where
           <$> params .:? "filters" .!= []
           <*> params .:? "matcher" .!= mempty
           <*> (fmap P.moduleNameFromString <$> params .:? "currentModule")
+          <*> params .:? "options" .!= defaultCompletionOptions
       "pursuit" -> do
         params <- o .: "params"
         Pursuit

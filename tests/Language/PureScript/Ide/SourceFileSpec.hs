@@ -18,7 +18,7 @@ span2 = P.SourceSpan "" (P.SourcePos 2 2) (P.SourcePos 3 3)
 
 typeAnnotation1, value1, synonym1, class1, class2, data1, data2, valueFixity, typeFixity, foreign1, foreign2, foreign3, member1 :: P.Declaration
 typeAnnotation1 = P.TypeDeclaration (P.Ident "value1") P.REmpty
-value1 = P.ValueDeclaration (P.Ident "value1") P.Public [] (Left [])
+value1 = P.ValueDeclaration (P.Ident "value1") P.Public [] []
 synonym1 = P.TypeSynonymDeclaration (P.ProperName "Synonym1") [] P.REmpty
 class1 = P.TypeClassDeclaration (P.ProperName "Class1") [] [] [] []
 class2 = P.TypeClassDeclaration (P.ProperName "Class2") [] [] []
@@ -44,27 +44,27 @@ spec :: Spec
 spec = do
   describe "Extracting Spans" $ do
     it "extracts a span for a value declaration" $
-      extractSpans span0 (P.PositionedDeclaration span1 [] value1) `shouldBe` [(IdeNSValue "value1", span1)]
+      extractSpans span0 (P.PositionedDeclaration span1 [] value1) `shouldBe` [(IdeNamespaced IdeNSValue "value1", span1)]
     it "extracts a span for a type synonym declaration" $
-      extractSpans span0 (P.PositionedDeclaration span1 [] synonym1) `shouldBe` [(IdeNSType "Synonym1", span1)]
+      extractSpans span0 (P.PositionedDeclaration span1 [] synonym1) `shouldBe` [(IdeNamespaced IdeNSType "Synonym1", span1)]
     it "extracts a span for a typeclass declaration" $
-      extractSpans span0 (P.PositionedDeclaration span1 [] class1) `shouldBe` [(IdeNSType "Class1", span1)]
+      extractSpans span0 (P.PositionedDeclaration span1 [] class1) `shouldBe` [(IdeNamespaced IdeNSType "Class1", span1)]
     it "extracts spans for a typeclass declaration and its members" $
-      extractSpans span0 (P.PositionedDeclaration span1 [] class2) `shouldBe` [(IdeNSType "Class2", span1), (IdeNSValue "member1", span2)]
+      extractSpans span0 (P.PositionedDeclaration span1 [] class2) `shouldBe` [(IdeNamespaced IdeNSType "Class2", span1), (IdeNamespaced IdeNSValue "member1", span2)]
     it "extracts a span for a data declaration" $
-      extractSpans span0 (P.PositionedDeclaration span1 [] data1) `shouldBe` [(IdeNSType "Data1", span1)]
+      extractSpans span0 (P.PositionedDeclaration span1 [] data1) `shouldBe` [(IdeNamespaced IdeNSType "Data1", span1)]
     it "extracts spans for a data declaration and its constructors" $
-      extractSpans span0 (P.PositionedDeclaration span1 [] data2) `shouldBe` [(IdeNSType "Data2", span1), (IdeNSValue "Cons1", span1)]
+      extractSpans span0 (P.PositionedDeclaration span1 [] data2) `shouldBe` [(IdeNamespaced IdeNSType "Data2", span1), (IdeNamespaced IdeNSValue "Cons1", span1)]
     it "extracts a span for a value operator fixity declaration" $
-      extractSpans span0 (P.PositionedDeclaration span1 [] valueFixity) `shouldBe` [(IdeNSValue "<$>", span1)]
+      extractSpans span0 (P.PositionedDeclaration span1 [] valueFixity) `shouldBe` [(IdeNamespaced IdeNSValue "<$>", span1)]
     it "extracts a span for a type operator fixity declaration" $
-      extractSpans span0 (P.PositionedDeclaration span1 [] typeFixity) `shouldBe` [(IdeNSType "~>", span1)]
+      extractSpans span0 (P.PositionedDeclaration span1 [] typeFixity) `shouldBe` [(IdeNamespaced IdeNSType "~>", span1)]
     it "extracts a span for a foreign declaration" $
-      extractSpans span0 (P.PositionedDeclaration span1 [] foreign1) `shouldBe` [(IdeNSValue "foreign1", span1)]
+      extractSpans span0 (P.PositionedDeclaration span1 [] foreign1) `shouldBe` [(IdeNamespaced IdeNSValue "foreign1", span1)]
     it "extracts a span for a data foreign declaration" $
-      extractSpans span0 (P.PositionedDeclaration span1 [] foreign2) `shouldBe` [(IdeNSType "Foreign2", span1)]
+      extractSpans span0 (P.PositionedDeclaration span1 [] foreign2) `shouldBe` [(IdeNamespaced IdeNSType "Foreign2", span1)]
     it "extracts a span for a foreign kind declaration" $
-      extractSpans span0 (P.PositionedDeclaration span1 [] foreign3) `shouldBe` [(IdeNSKind "Foreign3", span1)]
+      extractSpans span0 (P.PositionedDeclaration span1 [] foreign3) `shouldBe` [(IdeNamespaced IdeNSKind "Foreign3", span1)]
   describe "Type annotations" $ do
     it "extracts a type annotation" $
       extractTypeAnnotations [typeAnnotation1] `shouldBe` [(P.Ident "value1", P.REmpty)]
@@ -94,15 +94,15 @@ getLocation s = do
     runIde' defConfig ideState [Type s [] Nothing]
   pure (complLocation c)
   where
-    ideState = emptyIdeState `s3`
+    ideState = emptyIdeState `volatileState`
       [ ("Test",
          [ ideValue "sfValue" Nothing `annLoc` valueSS
-         , ideSynonym "SFType" P.tyString `annLoc` synonymSS
+         , ideSynonym "SFType" Nothing Nothing `annLoc` synonymSS
          , ideType "SFData" Nothing `annLoc` typeSS
          , ideDtor "SFOne" "SFData" Nothing `annLoc` typeSS
          , ideDtor "SFTwo" "SFData" Nothing `annLoc` typeSS
          , ideDtor "SFThree" "SFData" Nothing `annLoc` typeSS
-         , ideTypeClass "SFClass" [] `annLoc` classSS
+         , ideTypeClass "SFClass" P.kindType [] `annLoc` classSS
          , ideValueOp "<$>" (P.Qualified Nothing (Left "")) 0 Nothing Nothing
            `annLoc` valueOpSS
          , ideTypeOp "~>" (P.Qualified Nothing "") 0 Nothing Nothing

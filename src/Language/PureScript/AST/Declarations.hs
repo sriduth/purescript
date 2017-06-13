@@ -38,14 +38,27 @@ type Context = [(Ident, Type)]
 data TypeSearch
   = TSBefore Environment
   -- ^ An Environment captured for later consumption by type directed search
-  | TSAfter [(Qualified Ident, Type)]
+  | TSAfter
+    { tsAfterIdentifiers :: [(Qualified Text, Type)]
+    -- ^ The identifiers that fully satisfy the subsumption check
+    , tsAfterRecordFields :: Maybe [(Label, Type)]
+    -- ^ Record fields that are available on the first argument to the typed
+    -- hole
+    }
   -- ^ Results of applying type directed search to the previously captured
   -- Environment
   deriving Show
 
+onTypeSearchTypes :: (Type -> Type) -> TypeSearch -> TypeSearch
+onTypeSearchTypes f = runIdentity . onTypeSearchTypesM (Identity . f)
+
+onTypeSearchTypesM :: (Applicative m) => (Type -> m Type) -> TypeSearch -> m TypeSearch
+onTypeSearchTypesM f (TSAfter i r) = TSAfter <$> traverse (traverse f) i <*> traverse (traverse (traverse f)) r
+onTypeSearchTypesM _ (TSBefore env) = pure (TSBefore env)
+
 -- | A type of error messages
 data SimpleErrorMessage
-  = ModuleNotFound ModuleName 
+  = ModuleNotFound ModuleName
   | ErrorParsingFFIModule FilePath (Maybe Bundle.ErrorMessage)
   | ErrorParsingModule P.ParseError
   | MissingFFIModule ModuleName
@@ -83,7 +96,7 @@ data SimpleErrorMessage
   | NameIsUndefined Ident
   | UndefinedTypeVariable (ProperName 'TypeName)
   | PartiallyAppliedSynonym (Qualified (ProperName 'TypeName))
-  | EscapedSkolem (Maybe Expr)
+  | EscapedSkolem Text (Maybe SourceSpan) Type
   | TypesDoNotUnify Type Type
   | KindsDoNotUnify Kind Kind
   | ConstrainedTypeUnified Type Type
@@ -93,7 +106,11 @@ data SimpleErrorMessage
   | UnknownClass (Qualified (ProperName 'ClassName))
   | PossiblyInfiniteInstance (Qualified (ProperName 'ClassName)) [Type]
   | CannotDerive (Qualified (ProperName 'ClassName)) [Type]
+  | InvalidDerivedInstance (Qualified (ProperName 'ClassName)) [Type] Int
+  | ExpectedTypeConstructor (Qualified (ProperName 'ClassName)) [Type] Type
   | InvalidNewtypeInstance (Qualified (ProperName 'ClassName)) [Type]
+  | MissingNewtypeSuperclassInstance (Qualified (ProperName 'ClassName)) (Qualified (ProperName 'ClassName)) [Type]
+  | UnverifiableSuperclassInstance (Qualified (ProperName 'ClassName)) (Qualified (ProperName 'ClassName)) [Type]
   | CannotFindDerivingType (ProperName 'TypeName)
   | DuplicateLabel Label (Maybe Expr)
   | DuplicateValueDeclaration Ident
@@ -141,11 +158,14 @@ data SimpleErrorMessage
   | CannotDeriveNewtypeForData (ProperName 'TypeName)
   | ExpectedWildcard (ProperName 'TypeName)
   | InvalidFFIArity ModuleName Text Int Int
-  | CannotUseBindWithDo
+  | CannotUseBindWithDo Ident
   -- | instance name, type class, expected argument count, actual argument count
   | ClassInstanceArityMismatch Ident (Qualified (ProperName 'ClassName)) Int Int
   -- | a user-defined warning raised by using the Warn type class
   | UserDefinedWarning Type
+  -- | a declaration couldn't be used because there wouldn't be enough information
+  -- | to choose an instance
+  | UnusableDeclaration Ident
   deriving (Show)
 
 -- | Error message hints, providing more detailed information about failure.
@@ -209,11 +229,11 @@ getModuleSourceSpan (Module ss _ _ _ _) = ss
 -- Add an import declaration for a module if it does not already explicitly import it.
 --
 addDefaultImport :: ModuleName -> Module -> Module
-addDefaultImport toImport m@(Module ss coms mn decls exps)  =
+addDefaultImport toImport m@(Module ss coms mn decls exps) =
   if isExistingImport `any` decls || mn == toImport then m
-  else Module ss coms mn (ImportDeclaration toImport Implicit Nothing : decls) exps
+  else Module ss coms mn (ImportDeclaration (ss, []) toImport Implicit Nothing : decls) exps
   where
-  isExistingImport (ImportDeclaration mn' _ _) | mn' == toImport = True
+  isExistingImport (ImportDeclaration _ mn' _ _) | mn' == toImport = True
   isExistingImport (PositionedDeclaration _ _ d) = isExistingImport d
   isExistingImport _ = False
 
@@ -224,120 +244,116 @@ data DeclarationRef
   -- |
   -- A type constructor with data constructors
   --
-  = TypeRef (ProperName 'TypeName) (Maybe [ProperName 'ConstructorName])
+  = TypeRef SourceSpan (ProperName 'TypeName) (Maybe [ProperName 'ConstructorName])
   -- |
   -- A type operator
   --
-  | TypeOpRef (OpName 'TypeOpName)
+  | TypeOpRef SourceSpan (OpName 'TypeOpName)
   -- |
   -- A value
   --
-  | ValueRef Ident
+  | ValueRef SourceSpan Ident
   -- |
   -- A value-level operator
   --
-  | ValueOpRef (OpName 'ValueOpName)
+  | ValueOpRef SourceSpan (OpName 'ValueOpName)
   -- |
   -- A type class
   --
-  | TypeClassRef (ProperName 'ClassName)
+  | TypeClassRef SourceSpan (ProperName 'ClassName)
   -- |
   -- A type class instance, created during typeclass desugaring (name, class name, instance types)
   --
-  | TypeInstanceRef Ident
+  | TypeInstanceRef SourceSpan Ident
   -- |
   -- A module, in its entirety
   --
-  | ModuleRef ModuleName
+  | ModuleRef SourceSpan ModuleName
   -- |
   -- A named kind
   --
-  | KindRef (ProperName 'KindName)
+  | KindRef SourceSpan (ProperName 'KindName)
   -- |
   -- A value re-exported from another module. These will be inserted during
   -- elaboration in name desugaring.
   --
-  | ReExportRef ModuleName DeclarationRef
-  -- |
-  -- A declaration reference with source position information
-  --
-  | PositionedDeclarationRef SourceSpan [Comment] DeclarationRef
+  | ReExportRef SourceSpan ModuleName DeclarationRef
   deriving (Show)
 
 instance Eq DeclarationRef where
-  (TypeRef name dctors) == (TypeRef name' dctors') = name == name' && dctors == dctors'
-  (TypeOpRef name) == (TypeOpRef name') = name == name'
-  (ValueRef name) == (ValueRef name') = name == name'
-  (ValueOpRef name) == (ValueOpRef name') = name == name'
-  (TypeClassRef name) == (TypeClassRef name') = name == name'
-  (TypeInstanceRef name) == (TypeInstanceRef name') = name == name'
-  (ModuleRef name) == (ModuleRef name') = name == name'
-  (KindRef name) == (KindRef name') = name == name'
-  (ReExportRef mn ref) == (ReExportRef mn' ref') = mn == mn' && ref == ref'
-  (PositionedDeclarationRef _ _ r) == r' = r == r'
-  r == (PositionedDeclarationRef _ _ r') = r == r'
+  (TypeRef _ name dctors) == (TypeRef _ name' dctors') = name == name' && dctors == dctors'
+  (TypeOpRef _ name) == (TypeOpRef _ name') = name == name'
+  (ValueRef _ name) == (ValueRef _ name') = name == name'
+  (ValueOpRef _ name) == (ValueOpRef _ name') = name == name'
+  (TypeClassRef _ name) == (TypeClassRef _ name') = name == name'
+  (TypeInstanceRef _ name) == (TypeInstanceRef _ name') = name == name'
+  (ModuleRef _ name) == (ModuleRef _ name') = name == name'
+  (KindRef _ name) == (KindRef _ name') = name == name'
+  (ReExportRef _ mn ref) == (ReExportRef _ mn' ref') = mn == mn' && ref == ref'
   _ == _ = False
 
 -- enable sorting lists of explicitly imported refs when suggesting imports in linting, IDE, etc.
 -- not an Ord because this implementation is not consistent with its Eq instance.
 -- think of it as a notion of contextual, not inherent, ordering.
 compDecRef :: DeclarationRef -> DeclarationRef -> Ordering
-compDecRef (TypeRef name _) (TypeRef name' _) = compare name name'
-compDecRef (TypeOpRef name) (TypeOpRef name') = compare name name'
-compDecRef (ValueRef ident) (ValueRef ident') = compare ident ident'
-compDecRef (ValueOpRef name) (ValueOpRef name') = compare name name'
-compDecRef (TypeClassRef name) (TypeClassRef name') = compare name name'
-compDecRef (TypeInstanceRef ident) (TypeInstanceRef ident') = compare ident ident'
-compDecRef (ModuleRef name) (ModuleRef name') = compare name name'
-compDecRef (KindRef name) (KindRef name') = compare name name'
-compDecRef (ReExportRef name _) (ReExportRef name' _) = compare name name'
-compDecRef (PositionedDeclarationRef _ _ ref) ref' = compDecRef ref ref'
-compDecRef ref (PositionedDeclarationRef _ _ ref') = compDecRef ref ref'
+compDecRef (TypeRef _ name _) (TypeRef _ name' _) = compare name name'
+compDecRef (TypeOpRef _ name) (TypeOpRef _ name') = compare name name'
+compDecRef (ValueRef _ ident) (ValueRef _ ident') = compare ident ident'
+compDecRef (ValueOpRef _ name) (ValueOpRef _ name') = compare name name'
+compDecRef (TypeClassRef _ name) (TypeClassRef _ name') = compare name name'
+compDecRef (TypeInstanceRef _ ident) (TypeInstanceRef _ ident') = compare ident ident'
+compDecRef (ModuleRef _ name) (ModuleRef _ name') = compare name name'
+compDecRef (KindRef _ name) (KindRef _ name') = compare name name'
+compDecRef (ReExportRef _ name _) (ReExportRef _ name' _) = compare name name'
 compDecRef ref ref' = compare
   (orderOf ref) (orderOf ref')
     where
       orderOf :: DeclarationRef -> Int
-      orderOf (TypeClassRef _) = 0
-      orderOf (TypeOpRef _) = 1
-      orderOf (TypeRef _ _) = 2
-      orderOf (ValueRef _) = 3
-      orderOf (ValueOpRef _) = 4
-      orderOf (KindRef _) = 5
+      orderOf TypeClassRef{} = 0
+      orderOf TypeOpRef{} = 1
+      orderOf TypeRef{} = 2
+      orderOf ValueRef{} = 3
+      orderOf ValueOpRef{} = 4
+      orderOf KindRef{} = 5
       orderOf _ = 6
 
+declRefSourceSpan :: DeclarationRef -> SourceSpan
+declRefSourceSpan (TypeRef ss _ _) = ss
+declRefSourceSpan (TypeOpRef ss _) = ss
+declRefSourceSpan (ValueRef ss _) = ss
+declRefSourceSpan (ValueOpRef ss _) = ss
+declRefSourceSpan (TypeClassRef ss _) = ss
+declRefSourceSpan (TypeInstanceRef ss _) = ss
+declRefSourceSpan (ModuleRef ss _) = ss
+declRefSourceSpan (KindRef ss _) = ss
+declRefSourceSpan (ReExportRef ss _ _) = ss
+
 getTypeRef :: DeclarationRef -> Maybe (ProperName 'TypeName, Maybe [ProperName 'ConstructorName])
-getTypeRef (TypeRef name dctors) = Just (name, dctors)
-getTypeRef (PositionedDeclarationRef _ _ r) = getTypeRef r
+getTypeRef (TypeRef _ name dctors) = Just (name, dctors)
 getTypeRef _ = Nothing
 
 getTypeOpRef :: DeclarationRef -> Maybe (OpName 'TypeOpName)
-getTypeOpRef (TypeOpRef op) = Just op
-getTypeOpRef (PositionedDeclarationRef _ _ r) = getTypeOpRef r
+getTypeOpRef (TypeOpRef _ op) = Just op
 getTypeOpRef _ = Nothing
 
 getValueRef :: DeclarationRef -> Maybe Ident
-getValueRef (ValueRef name) = Just name
-getValueRef (PositionedDeclarationRef _ _ r) = getValueRef r
+getValueRef (ValueRef _ name) = Just name
 getValueRef _ = Nothing
 
 getValueOpRef :: DeclarationRef -> Maybe (OpName 'ValueOpName)
-getValueOpRef (ValueOpRef op) = Just op
-getValueOpRef (PositionedDeclarationRef _ _ r) = getValueOpRef r
+getValueOpRef (ValueOpRef _ op) = Just op
 getValueOpRef _ = Nothing
 
 getTypeClassRef :: DeclarationRef -> Maybe (ProperName 'ClassName)
-getTypeClassRef (TypeClassRef name) = Just name
-getTypeClassRef (PositionedDeclarationRef _ _ r) = getTypeClassRef r
+getTypeClassRef (TypeClassRef _ name) = Just name
 getTypeClassRef _ = Nothing
 
 getKindRef :: DeclarationRef -> Maybe (ProperName 'KindName)
-getKindRef (KindRef name) = Just name
-getKindRef (PositionedDeclarationRef _ _ r) = getKindRef r
+getKindRef (KindRef _ name) = Just name
 getKindRef _ = Nothing
 
 isModuleRef :: DeclarationRef -> Bool
-isModuleRef (PositionedDeclarationRef _ _ r) = isModuleRef r
-isModuleRef (ModuleRef _) = True
+isModuleRef ModuleRef{} = True
 isModuleRef _ = False
 
 -- |
@@ -389,7 +405,10 @@ data Declaration
   -- |
   -- A value declaration (name, top-level binders, optional guard, value)
   --
-  | ValueDeclaration Ident NameKind [Binder] (Either [(Guard, Expr)] Expr)
+  | ValueDeclaration Ident NameKind [Binder] [GuardedExpr]
+  -- |
+  -- A declaration paired with pattern matching in let-in expression (binder, optional guard, value)
+  | BoundValueDeclaration Binder Expr
   -- |
   -- A minimal mutually recursive set of value declarations
   --
@@ -413,7 +432,7 @@ data Declaration
   -- |
   -- A module import (module name, qualified/unqualified/hiding, optional "qualified as" name)
   --
-  | ImportDeclaration ModuleName ImportDeclarationType (Maybe ModuleName)
+  | ImportDeclaration SourceAnn ModuleName ImportDeclarationType (Maybe ModuleName)
   -- |
   -- A type class declaration (name, argument, implies, member declarations)
   --
@@ -551,7 +570,18 @@ flattenDecls = concatMap flattenOne
 -- |
 -- A guard is just a boolean-valued expression that appears alongside a set of binders
 --
-type Guard = Expr
+data Guard = ConditionGuard Expr
+           | PatternGuard Binder Expr
+           deriving (Show)
+
+-- |
+-- The right hand side of a binder in value declarations
+-- and case expressions.
+data GuardedExpr = GuardedExpr [Guard] Expr
+                 deriving (Show)
+
+pattern MkUnguarded :: Expr -> GuardedExpr
+pattern MkUnguarded e = GuardedExpr [] e
 
 -- |
 -- Data type for expressions and terms
@@ -596,7 +626,7 @@ data Expr
   -- |
   -- Function introduction
   --
-  | Abs (Either Ident Binder) Expr
+  | Abs Binder Expr
   -- |
   -- Function application
   --
@@ -683,7 +713,7 @@ data CaseAlternative = CaseAlternative
     -- |
     -- The result expression or a collect of guarded expressions
     --
-  , caseAlternativeResult :: Either [(Guard, Expr)] Expr
+  , caseAlternativeResult :: [GuardedExpr]
   } deriving (Show)
 
 -- |
@@ -743,3 +773,11 @@ newtype AssocList k t = AssocList { runAssocList :: [(k, t)] }
 
 $(deriveJSON (defaultOptions { sumEncoding = ObjectWithSingleField }) ''DeclarationRef)
 $(deriveJSON (defaultOptions { sumEncoding = ObjectWithSingleField }) ''ImportDeclarationType)
+
+isTrueExpr :: Expr -> Bool
+isTrueExpr (Literal (BooleanLiteral True)) = True
+isTrueExpr (Var (Qualified (Just (ModuleName [ProperName "Prelude"])) (Ident "otherwise"))) = True
+isTrueExpr (Var (Qualified (Just (ModuleName [ProperName "Data", ProperName "Boolean"])) (Ident "otherwise"))) = True
+isTrueExpr (TypedValue _ e _) = isTrueExpr e
+isTrueExpr (PositionedValue _ _ e) = isTrueExpr e
+isTrueExpr _ = False
