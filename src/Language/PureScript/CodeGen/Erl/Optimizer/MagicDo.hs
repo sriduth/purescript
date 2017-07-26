@@ -12,12 +12,8 @@ import Language.PureScript.Options
 import qualified Language.PureScript.Constants as C
 import qualified Language.PureScript.CodeGen.Erl.Constants as EC
 
-magicDo :: Options -> Erl -> Erl
-magicDo opts | optionsNoMagicDo opts = id
-             | otherwise = magicDo'
-
-magicDo' :: Erl -> Erl
-magicDo' = everywhereOnErl undo . everywhereOnErlTopDown convert
+magicDo :: Erl -> Erl
+magicDo = everywhereOnErl undo . everywhereOnErlTopDown convert
   where
   -- The name of the function block which is added to denote a do block
   fnName = "__do"

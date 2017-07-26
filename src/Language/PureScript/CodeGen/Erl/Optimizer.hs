@@ -24,20 +24,15 @@ import Language.PureScript.CodeGen.Erl.Optimizer.Guards
 -- |
 -- Apply a series of optimizer passes to simplified Javascript code
 --
-optimize :: (MonadReader Options m, MonadSupply m) => Erl -> m Erl
-optimize js = do
-  noOpt <- asks optionsNoOptimizations
-  if noOpt then return js else optimize' js
 
-optimize' :: (MonadReader Options m, MonadSupply m) => Erl -> m Erl
-optimize' erl = do
-  opts <- ask
+optimize :: MonadSupply m => Erl -> m Erl
+optimize erl = do
   erl' <- untilFixedPoint (pure . tidyUp . applyAll
     [ inlineCommonValues
     , inlineCommonOperators
     , evaluateIifes
     ]) erl
-  untilFixedPoint (pure . tidyUp) . magicDo opts $ erl'
+  untilFixedPoint (pure . tidyUp) . magicDo $ erl'
 
   where
   tidyUp :: Erl -> Erl

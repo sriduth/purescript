@@ -1,4 +1,4 @@
--- This file has been generated from package.yaml by hpack version 0.17.0.
+-- This file has been generated from package.yaml by hpack version 0.14.0.
 --
 -- see: https://github.com/sol/hpack
 
@@ -661,6 +661,9 @@ flag release
     default: False
 
 library
+    hs-source-dirs:
+          src
+    default-extensions: ConstraintKinds DataKinds DeriveFunctor EmptyDataDecls FlexibleContexts KindSignatures LambdaCase MultiParamTypeClasses NoImplicitPrelude PatternGuards PatternSynonyms RankNTypes RecordWildCards OverloadedStrings ScopedTypeVariables TupleSections ViewPatterns
     build-depends:
           aeson >=1.0 && <1.1
         , aeson-better-errors >=0.8
@@ -731,17 +734,17 @@ library
           Language.PureScript.AST.Traversals
           Language.PureScript.Bundle
           Language.PureScript.CodeGen
-                     Language.PureScript.CodeGen.Erl
-                     Language.PureScript.CodeGen.Erl.AST
-                     Language.PureScript.CodeGen.Erl.Common
-                     Language.PureScript.CodeGen.Erl.Constants
-                     Language.PureScript.CodeGen.Erl.Optimizer
-                     Language.PureScript.CodeGen.Erl.Optimizer.Common
-                     Language.PureScript.CodeGen.Erl.Optimizer.MagicDo
-                     Language.PureScript.CodeGen.Erl.Optimizer.Blocks
-                     Language.PureScript.CodeGen.Erl.Optimizer.Unused
-                     Language.PureScript.CodeGen.Erl.Optimizer.Inliner
-                     Language.PureScript.CodeGen.Erl.Optimizer.Guards
+          Language.PureScript.CodeGen.Erl
+          Language.PureScript.CodeGen.Erl.AST
+          Language.PureScript.CodeGen.Erl.Common
+          Language.PureScript.CodeGen.Erl.Constants
+          Language.PureScript.CodeGen.Erl.Optimizer
+          Language.PureScript.CodeGen.Erl.Optimizer.Blocks
+          Language.PureScript.CodeGen.Erl.Optimizer.Common
+          Language.PureScript.CodeGen.Erl.Optimizer.Guards
+          Language.PureScript.CodeGen.Erl.Optimizer.Inliner
+          Language.PureScript.CodeGen.Erl.Optimizer.MagicDo
+          Language.PureScript.CodeGen.Erl.Optimizer.Unused
           Language.PureScript.CodeGen.JS
           Language.PureScript.CodeGen.JS.Common
           Language.PureScript.CodeGen.JS.Printer
@@ -824,14 +827,14 @@ library
           Language.PureScript.Parser
           Language.PureScript.Parser.Common
           Language.PureScript.Parser.Declarations
-                     Language.PureScript.Parser.Erl
+          Language.PureScript.Parser.Erl
           Language.PureScript.Parser.Kinds
           Language.PureScript.Parser.Lexer
           Language.PureScript.Parser.State
           Language.PureScript.Parser.Types
           Language.PureScript.Pretty
           Language.PureScript.Pretty.Common
-                     Language.PureScript.Pretty.Erl
+          Language.PureScript.Pretty.Erl
           Language.PureScript.Pretty.Kinds
           Language.PureScript.Pretty.Types
           Language.PureScript.Pretty.Values
@@ -874,26 +877,8 @@ library
           Language.PureScript.TypeClassDictionaries
           Language.PureScript.Types
           System.IO.UTF8
-    ghc-options: -Wall -O2 -fno-warn-unused-do-bind -threaded -rtsopts "-with-rtsopts=-N"
-
-executable pserlc
-    build-depends: base >=4 && <5, base-compat >=0.6.0,
-                   containers -any, directory -any, filepath -any,
-                   mtl -any, optparse-applicative >= 0.12.1, parsec -any, purescript -any,
-                   time -any, transformers -any, transformers-compat -any, Glob >= 0.7 && < 0.8,
-                   aeson >= 0.8 && < 1.1, bytestring -any, utf8-string >= 1 && < 2,
-                   text -any,
-                   ansi-terminal >= 0.6.2 && < 0.7,
-                   transformers-base >= 0.4.0 && < 0.5, lifted-base >= 0.2.3 && < 0.2.4, monad-control >= 1.0.0.0 && < 1.1
-    main-is: Main.hs
-    buildable: True
-    hs-source-dirs: pserlc
-    other-modules: Make, Paths_purescript
     other-modules:
           Paths_purescript
-    hs-source-dirs:
-          src
-    default-extensions: ConstraintKinds DataKinds DeriveFunctor EmptyDataDecls FlexibleContexts KindSignatures LambdaCase MultiParamTypeClasses NoImplicitPrelude PatternGuards PatternSynonyms RankNTypes RecordWildCards OverloadedStrings ScopedTypeVariables TupleSections ViewPatterns
     default-language: Haskell2010
     ghc-options: -Wall -O2
 
