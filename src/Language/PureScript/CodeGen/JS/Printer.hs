@@ -110,7 +110,7 @@ literals = mkPattern' match'
   match (Var _ ident) = return $ emit ident
 
   match q@(VariableIntroduction _ ident value) =
-    let value' = value in
+    let value' = trace ("Variable intro :: \n" <> show q <> "\n") value in
     case value' of
       
       -- | HACK:
@@ -128,8 +128,14 @@ literals = mkPattern' match'
       Just fun@(Function _ _ arguments body) ->
         case arguments of
           (head:rest) ->
-            let curriedFnBody = (Block Nothing [(Function Nothing Nothing [head] body)]) in
-            mconcat <$> sequence [ return $ emit ("def " <> ident <> " ")
+            if head == "__typeClassInstanceDefn"
+            then
+              let curriedFnBody = (Block Nothing [(Function Nothing Nothing [] body)]) in
+                mconcat <$> sequence [ return $ emit ("def " <> ident <> " ")
+                                 , prettyPrintJS' body]
+            else
+              let curriedFnBody = (Block Nothing [(Function Nothing Nothing arguments body)]) in
+                mconcat <$> sequence [ return $ emit ("def " <> ident <> " ")
                                  , prettyPrintJS' curriedFnBody]
           _ -> prettyPrintJS' body
       -- Just (fun@(Function _ _ arguments body)) ->
@@ -280,7 +286,7 @@ lam :: Pattern PrinterState AST ((Maybe Text, [Text], Maybe SourceSpan), AST)
 lam = mkPattern match
   where
   match z@(Function ss name' args ret) =
-    let name = trace ("lam :: name -> " <> show z <> "\n\n") name' in
+    let name = name' in
     -- | HACK
     -- For anonymous functions (where name is Nothing),
     -- replace the body of the function by a FnBlock, which does not

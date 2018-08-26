@@ -214,7 +214,7 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
       Var (_, _, _, Just (IsConstructor _ fields)) name | length args == length fields ->
         return $ AST.Unary Nothing AST.New $ AST.App Nothing (qualifiedToJS id name) args'
       Var (_, _, _, Just IsTypeClassConstructor) name ->
-        return $ AST.Unary Nothing AST.New $ AST.App Nothing (qualifiedToJS id name) args'
+        return $ AST.Function Nothing Nothing ["__typeClassInstanceDefn"] $ AST.Block Nothing [AST.App Nothing (qualifiedToJS id name) args']
       _ -> flip (foldl (\fn a -> AST.App Nothing fn [a])) args' <$> valueToJs f
     where
     unApp :: Expr Ann -> [Expr Ann] -> (Expr Ann, [Expr Ann])
@@ -315,7 +315,7 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
   bindersToJs ss binders vals =  do
     valNames <- replicateM (length vals) freshName
     let assignments = zipWith (AST.VariableIntroduction Nothing) valNames (map Just vals)
-    jss <- (\x -> [[trace ("Mapper Result :: \n" <> show (mapper x) <> "\n") (mapper x)]]) <$> (forM binders $ \caseAlt ->  do
+    jss <- (\x -> [[(mapper x)]]) <$> (forM binders $ \caseAlt ->  do
       let (CaseAlternative bs result) = caseAlt
       ret <- guardsToJs result
       go valNames ret bs)
