@@ -99,7 +99,7 @@ data AST
   | StructDeclaration (Maybe SourceSpan)  [Text] (Maybe AST)
   -- ^ Elixir named function representaion, acts as a wrapper
   | FnBlock (Maybe SourceSpan) [AST]
-  | IfElseBlock (Maybe SourceSpan) [AST] (Maybe AST)
+  | IfElseBlock (Maybe SourceSpan) AST AST (Maybe AST)
   deriving (Show, Eq)
 
 withSourceSpan :: SourceSpan -> AST -> AST
@@ -162,7 +162,7 @@ getSourceSpan = go where
   go (ModuleImport ss _ _) = ss
   go (StructDeclaration ss _ _) = ss
   go (FnBlock ss _) = ss
-  go (IfElseBlock ss _ _) = ss
+  go (IfElseBlock ss _ _ _) = ss
 
 everywhere :: (AST -> AST) -> AST -> AST
 everywhere f = go where

@@ -20,7 +20,7 @@ import Control.Monad.Supply.Class
 import Data.List ((\\), delete, intersect)
 import qualified Data.Foldable as F
 import qualified Data.Map as M
-import Data.Maybe (fromMaybe, isNothing)
+import Data.Maybe (fromMaybe, isNothing, fromJust)
 import Data.Monoid ((<>))
 import Data.String (fromString)
 import Data.Text (Text, unpack)
@@ -43,6 +43,8 @@ import Language.PureScript.Traversals (sndM)
 import qualified Language.PureScript.Constants as C
 
 import System.FilePath.Posix ((</>))
+
+import Debug.Trace
 
 -- | Generate code in the simplified JavaScript intermediate representation for all declarations in a
 -- module.
@@ -225,19 +227,19 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
   valueToJs' (Var (_, _, _, Just IsForeign) ident) =
     internalError $ "Encountered an unqualified reference to a foreign ident " ++ T.unpack (showQualified showIdent ident)
   valueToJs' (Var _ ident) = return $ varToJs ident
-  valueToJs' (Case (ss, _, _, _) values binders) = do
+  valueToJs' z@(Case (ss, _, _, _) values binders) = do
     vals <- mapM valueToJs values
-    bindersToJs ss binders vals
+    bindersToJs ss binders  vals
   valueToJs' (Let _ ds val) = do
     ds' <- concat <$> mapM bindToJs ds
     ret <- valueToJs val
     return $ AST.App Nothing (AST.Function Nothing Nothing [] (AST.Block Nothing (ds' ++ [AST.Return Nothing ret]))) []
   valueToJs' (Constructor (_, _, _, Just IsNewtype) _ (ProperName ctor) _) =
-    return $ AST.ModuleIntroduction Nothing (properToJs ctor) Nothing
-    -- return $ AST.VariableIntroduction Nothing (properToJs ctor) (Just $
-    --             AST.ObjectLiteral Nothing [("create",
-    --               AST.Function Nothing Nothing ["value"]
-    --                 (AST.Block Nothing [AST.Return Nothing $ AST.Var Nothing "value"]))])
+   -- return $ AST.ModuleIntroduction Nothing (properToJs ctor) Nothing
+    return $ AST.VariableIntroduction Nothing (properToJs ctor) (Just $
+                AST.ObjectLiteral Nothing [("create",
+                  AST.Function Nothing Nothing ["value"]
+                    (AST.Block Nothing [AST.Return Nothing $ AST.Var Nothing "value"]))])
   valueToJs' (Constructor _ _ (ProperName ctor) []) =
     -- return $ AST.ModuleIntroduction Nothing (properToJs ctor) Nothing
     return $ AST.ModuleIntroduction Nothing (properToJs ctor)
@@ -248,7 +250,7 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
   valueToJs' (Constructor _ _ (ProperName ctor) fields) =
     --return $ AST.ModuleIntroduction Nothing (properToJs ctor) Nothing
     return $ AST.ModuleIntroduction Nothing (properToJs ctor)
-      $ Just (AST.Block Nothing [(AST.StructDeclaration Nothing (runIdent <$> fields) Nothing)])
+     $ Just (AST.Block Nothing [(AST.StructDeclaration Nothing (runIdent <$> fields) Nothing)])
     -- let constructor =
     --       let body = [ AST.Assignment Nothing ((accessorString $ mkString $ identToJs f) (AST.Var Nothing "this")) (var f) | f <- fields ]
     --       in AST.Function Nothing (Just (properToJs ctor)) (identToJs `map` fields) (AST.Block Nothing body)
@@ -310,20 +312,38 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
   -- | Generate code in the simplified JavaScript intermediate representation for pattern match binders
   -- and guards.
   bindersToJs :: SourceSpan -> [CaseAlternative Ann] -> [AST] -> m AST
-  bindersToJs ss binders vals = do
+  bindersToJs ss binders vals =  do
     valNames <- replicateM (length vals) freshName
     let assignments = zipWith (AST.VariableIntroduction Nothing) valNames (map Just vals)
-    jss <- forM binders $ \(CaseAlternative bs result) -> do
+    jss <- (\x -> [[trace ("Mapper Result :: \n" <> show (mapper x) <> "\n") (mapper x)]]) <$> (forM binders $ \caseAlt ->  do
+      let (CaseAlternative bs result) = caseAlt
       ret <- guardsToJs result
-      go valNames ret bs
-    return $ AST.App Nothing (AST.Function Nothing Nothing [] (AST.Block Nothing (assignments ++ concat jss ++ [AST.Throw Nothing $ failedPatternError valNames])))
-                   []
+      go valNames ret bs)
+-- Remove no case matched here and add in printer
+    return  $ AST.App Nothing (AST.Function Nothing Nothing [] (AST.Block Nothing (assignments ++ concat jss))) []
     where
+      mapper :: [[AST]] -> AST
+      mapper items =
+        let items' = items in 
+        case items' of
+           hd:rst ->
+                  case hd of
+                    [(AST.IfElse ss ifCond thens elses)] ->
+                       if (length rst) > 0 then
+                         case elses of
+                            (Just elses') -> AST.IfElse ss ifCond thens (Just (AST.Block Nothing [elses', (mapper rst)]))
+                            _ ->  AST.IfElse ss ifCond thens (Just (AST.Block Nothing [(mapper rst)]))
+                       else
+                         AST.IfElse ss ifCond thens elses
+                    _ -> internalError "lol"
+           _ -> internalError "lol"
+           
       go :: [Text] -> [AST] -> [Binder Ann] -> m [AST]
       go _ done [] = return done
       go (v:vs) done' (b:bs) = do
         done'' <- go vs done' bs
         binderToJs v done'' b
+
       go _ _ _ = internalError "Invalid arguments to bindersToJs"
 
       failedPatternError :: [Text] -> AST
@@ -342,7 +362,7 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
       guardsToJs (Left gs) = traverse genGuard gs where
         genGuard (cond, val) = do
           cond' <- valueToJs cond
-          val'   <- valueToJs val
+          val'  <- valueToJs val
           return
             (AST.IfElse Nothing cond'
               (AST.Block Nothing [AST.Return Nothing val']) Nothing)
@@ -363,17 +383,17 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
   binderToJs' varName done (VarBinder _ ident) =
     return (AST.VariableIntroduction Nothing (identToJs ident) (Just (AST.Var Nothing varName)) : done)
   binderToJs' varName done (ConstructorBinder (_, _, _, Just IsNewtype) _ _ [b]) =
-    --binderToJs varName done b
-    return ([AST.ModuleIntroduction Nothing (T.pack "test") Nothing])
+    binderToJs varName done b
+    --return ([AST.ModuleIntroduction Nothing (T.pack "test") Nothing])
   binderToJs' varName done (ConstructorBinder (_, _, _, Just (IsConstructor ctorType fields)) _ ctor bs) = do
-    return [AST.ModuleIntroduction Nothing (T.pack "test") Nothing]
--- js <- go (zip fields bs) done
-    -- return $ case ctorType of
-    --   ProductType -> js
-    --   SumType ->
-    --     [AST.IfElse Nothing (AST.InstanceOf Nothing (AST.Var Nothing varName) (qualifiedToJS (Ident . runProperName) ctor))
-    --               (AST.Block Nothing js)
-    --               Nothing]
+    --return [AST.ModuleIntroduction Nothing (T.pack "test") Nothing]
+    js <- go (zip fields bs) done
+    return $ case ctorType of
+      ProductType -> js
+      SumType ->
+        [AST.IfElse Nothing (AST.InstanceOf Nothing (AST.Var Nothing varName) (qualifiedToJS (Ident . runProperName) ctor))
+                  (AST.Block Nothing js)
+                  Nothing]
     where
     go :: [(Ident, Binder Ann)] -> [AST] -> m [AST]
     go [] done' = return done'

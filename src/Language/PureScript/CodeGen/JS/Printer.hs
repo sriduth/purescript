@@ -25,6 +25,9 @@ import Language.PureScript.Crash
 import Language.PureScript.Pretty.Common
 import Language.PureScript.PSString (PSString, decodeString, prettyPrintStringJS)
 
+import System.IO.Unsafe
+import Debug.Trace
+import Data.Maybe
 -- TODO (Christoph): Get rid of T.unpack / pack
 
 literals :: (Emit gen) => Pattern PrinterState AST gen
@@ -62,46 +65,59 @@ literals = mkPattern' match'
           s'
         _ ->
           prettyPrintStringJS s
-  match (FnBlock _ sts) = mconcat <$> sequence
+
+-- [IfElse
+--  Nothing
+--  (Var Nothing "arg")
+--  (Block Nothing [Return Nothing (NumericLiteral Nothing (Left 123))]) Nothing,
+--  Return Nothing (NumericLiteral Nothing (Left 456))]
+
+  match (FnBlock _ sts) =
+    mconcat <$> sequence
     [ return $ emit "\n"
     , withIndent $ prettyStatements sts
     , return $ emit "\n"
     , currentIndent
     , return $ emit "end"]
+
+-- recurseAndFixIfElse ife =
+--   case ife of
+--     [(IfElse a b c d), rst] -> [IfElseBlock a b c (Just rst)]
+--     _ -> 
   match (Block _ sts) =
-    let sts' = case sts of
-          hd:rst -> case hd of
-                      IfElse ss p t e -> [IfElse ss p hd (Just (head rst))
-                                         , Block Nothing (tail rst)]
-                      _ -> sts
-          _ -> sts
-    in
     mconcat <$> sequence
     [ return $ emit "do\n"
-    , withIndent $ prettyStatements sts'
+    , withIndent $ prettyStatements sts
     , return $ emit "\n"
     , currentIndent
     , return $ emit "end"
     ]
-  match (ModuleIntroduction _ name (Just rest)) = mconcat <$> sequence
+  match (ModuleIntroduction _ name (Just rest)) =
+    mconcat <$> sequence
     [ return $ emit ("defmodule " <> name <> " ")
     , prettyPrintJS' rest
     , currentIndent]
   match (ModuleImport _ importDecl _) = mconcat <$> sequence 
     [ return $ emit ("use " <> importDecl)]
-  match (StructDeclaration _ fields _) = mconcat <$> sequence
-    [ currentIndent
-    , return $ emit ("defstruct " <> (intercalate ", " fields))]
+  match (StructDeclaration _ fields _) =
+    let
+      fields' = (\field -> ":" <> field) <$> fields
+    in
+      mconcat <$> sequence
+      [ currentIndent
+      , return $ emit ("defstruct [" <> (intercalate ", " fields') <> "]")]
+
   match (Var _ ident) = return $ emit ident
 
-  match (VariableIntroduction _ ident value) =
-    case value of
+  match q@(VariableIntroduction _ ident value) =
+    let value' = value in
+    case value' of
       
       -- | HACK:
       -- In a variable introduction, if the right hand side
       -- is the creation of a data constructor, return the
       -- generated code directly
-      Just (mod@(ModuleIntroduction _ name (Just rest))) ->
+      Just (mod@(ModuleIntroduction _ _ _)) ->
         prettyPrintJS' mod
 
       -- | HACK:
@@ -109,7 +125,7 @@ literals = mkPattern' match'
       -- To make it to the Elixir compatible def form and to support
       -- currying, take the first argument and make it a def, the rest
       -- of the arguments can be generated as anonymous functions
-      Just (fun@(Function _ _ arguments body)) ->
+      Just fun@(Function _ _ arguments body) ->
         case arguments of
           (head:rest) ->
             let curriedFnBody = (Block Nothing [(Function Nothing Nothing [head] body)]) in
@@ -121,8 +137,11 @@ literals = mkPattern' match'
       --     (head:rest) ->
       --       let curriedAnonFnBody = (FnBlock Nothing [(Function Nothing Nothing [head] body)]) in
       --         prettyPrintJS' curriedAnonFnBody
-      _ -> mconcat <$> sequence
-           [ return $ emit $ "let " <> ident
+      --     _ -> prettyPrintJS' fun
+          
+      _ ->
+        mconcat <$> sequence
+           [ return $ emit $ ident
            , maybe (return mempty) (fmap (emit " = " <>) . prettyPrintJS') value
            ]
   match (Assignment _ target value) = mconcat <$> sequence
@@ -150,26 +169,49 @@ literals = mkPattern' match'
     , return $ emit ") "
     , prettyPrintJS' sts
     ]
-  match (IfElseBlock _ thens elses) =
-    case thens of
-      (hd:rst) -> mconcat <$> sequence
-                       [ return $ emit "do\n"
-                       , withIndent $ prettyStatements [hd]
-                       , return $ emit "\n"
-                       , currentIndent
-                       , withIndent $ prettyStatements rst
-                       , return $ emit "end''"
-                       ]
+  match z@(IfElseBlock _  pred thens elses) =
+    mconcat <$> sequence
+    [ return $ emit "if ("
+    , prettyPrintJS' pred
+    , return $ emit ") "
+    --, return $ emit "do\n  "
+    , withIndent $ prettyPrintJS' $ thens
+    , return $ emit "\n"
+    , currentIndent
+    , return $ emit "else\n"
+    , currentIndent
+    , maybe (return $ emit "# not JS") (\x -> withIndent $ prettyPrintJS' x) elses
+    , return $ emit "\n"
+    , currentIndent
+    , return $ emit "end"
+    ]
                        --, maybe (return mempty) (fmap (emit "else" <>) . prettyPrintJS') elses
-      _ -> return $ emit "end123"
   match (IfElse _ cond thens elses) =
-    let (Block _ insides) = thens
-        thens' = IfElseBlock Nothing insides elses in
+    let elses' = case elses of
+                   Just (Block _ items) -> items
+                   Just other -> [other]
+                   _ -> [Throw Nothing (StringLiteral Nothing "No pattern matched")]
+        thens' = case thens of
+                   (Block _ items) -> items
+                   other -> [other]
+                   _ -> [thens]
+    in
+                            
+                   
+    -- let (Block _ insides) = thens
+    --     thens' = IfElseBlock Nothing insides elses in
       mconcat <$> sequence
-      [ return $ emit "if ("
+      [ withIndent $ return $ emit "if ("
       , prettyPrintJS' cond
-      , return $ emit ") "
-      --, prettyPrintJS' thens'
+      , return $ emit ") do \n"
+      , withIndent $ prettyStatements thens'
+      , return $ emit "\n"
+      , currentIndent
+      , return ( emit  "else\n")
+      , withIndent $ prettyStatements elses'
+      , return $ emit "\n"
+      , currentIndent
+      , return $ emit $ "end"
       ]
 
   -- | Don't "return"
@@ -178,16 +220,18 @@ literals = mkPattern' match'
       prettyPrintJS' value
     ]
   match (ReturnNoResult _) = return $ emit "/* return */"
-  match (Throw _ value) = mconcat <$> sequence
-    [ return $ emit "throw "
-    , prettyPrintJS' value
+  match (Throw _ value) =
+    let value' = value in
+    mconcat <$> sequence
+    [ return $ emit "raise "
+    , prettyPrintJS' (StringLiteral Nothing "Errore")
     ]
   match (Comment _ com js) = mconcat <$> sequence
     [ return $ emit "\n"
     , mconcat <$> forM com comment
     , prettyPrintJS' js
     ]
-  match _ = mzero
+  match a@(_) = mzero
 
   comment :: (Emit gen) => Comment -> StateT PrinterState Maybe gen
   comment (LineComment com) = fmap mconcat $ sequence $
@@ -235,14 +279,15 @@ indexer = mkPattern' match
 lam :: Pattern PrinterState AST ((Maybe Text, [Text], Maybe SourceSpan), AST)
 lam = mkPattern match
   where
-  match (Function ss name args ret) =
+  match z@(Function ss name' args ret) =
+    let name = trace ("lam :: name -> " <> show z <> "\n\n") name' in
     -- | HACK
     -- For anonymous functions (where name is Nothing),
     -- replace the body of the function by a FnBlock, which does not
     -- insert a `do` in the beginning of the block
     case name of
       Nothing ->
-        let (Block _ body) = ret 
+        let (Block _ body) =  ret
             ret' = (FnBlock Nothing body) in
           Just((name, args, ss), ret')
       _ -> Just ((name, args, ss), ret)
@@ -315,12 +360,13 @@ prettyPrintJS' = A.runKleisli $ runPattern matchValue
     OperatorTable [ [ Wrap indexer $ \index val -> val <> emit "[" <> index <> emit "]" ]
                   , [ Wrap accessor $ \prop val -> val <> emit "." <> emit prop ]
                   , [ Wrap app $ \args val ->  val <> emit(".") <> emit "(" <> args <> emit ")" ]
-                  , [ unary New "new " ]
-                  , [ Wrap lam $ \(name, args, ss) ret -> addMapping' ss <>
-                      case name of
-                        Just name -> 
-                          emit ("def " <> name <> "(" <> intercalate ", " args <> ") ") <> ret
-                        Nothing -> emit ("fn" <> "(" <> intercalate "," args <> ") -> ") <> ret]
+                  , [ unary New "" ]
+                  , [ Wrap lam $ \(name, args, ss) ret ->
+                        addMapping' ss <>
+                        case name of
+                          Just name -> 
+                            emit ("def " <> name <> "(" <> intercalate ", " args <> ") ") <> ret
+                          Nothing -> emit ("fn" <> "(" <> intercalate "," args <> ") -> ") <> ret]
                   , [ unary     Not                  "!"
                     , unary     BitwiseNot           "~"
                     , unary     Positive             "+"
@@ -337,7 +383,7 @@ prettyPrintJS' = A.runKleisli $ runPattern matchValue
                     , binary    LessThanOrEqualTo    "<="
                     , binary    GreaterThan          ">"
                     , binary    GreaterThanOrEqualTo ">="
-                    , AssocR instanceOf $ \v1 v2 -> v1 <> emit " instanceof " <> v2 ]
+                    , AssocR instanceOf $ \v1 v2 -> v1 <> emit ".__struct__ ==" <> v2 ]
                   , [ binary    EqualTo              "==="
                     , binary    NotEqualTo           "!==" ]
                   , [ binary    BitwiseAnd           "&" ]

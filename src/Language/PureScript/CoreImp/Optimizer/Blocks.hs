@@ -20,9 +20,10 @@ collapseNestedBlocks = everywhere collapse where
   go s = [s]
 
 collapseNestedIfs :: AST -> AST
-collapseNestedIfs = everywhere collapse where
-  collapse :: AST -> AST
-  collapse (IfElse _ (BooleanLiteral _ True) (Block _ [js]) _) = js
-  collapse (IfElse s1 cond1 (Block _ [IfElse s2 cond2 body Nothing]) Nothing) =
-      IfElse s1 (Binary s2 And cond1 cond2) body Nothing
-  collapse js = js
+collapseNestedIfs x = x
+-- collapseNestedIfs = everywhere collapse where
+--   collapse :: AST -> AST
+--   collapse (IfElse _ (BooleanLiteral _ True) (Block _ [js]) _) = js
+--   collapse (IfElse s1 cond1 (Block _ [IfElse s2 cond2 body Nothing]) Nothing) =
+--       IfElse s1 (Binary s2 And cond1 cond2) body Nothing
+--   collapse js = js
