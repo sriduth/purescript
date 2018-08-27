@@ -98,7 +98,7 @@ literals = mkPattern' match'
     , prettyPrintJS' rest
     , currentIndent]
   match (ModuleImport _ importDecl _) = mconcat <$> sequence 
-    [ return $ emit ("use " <> importDecl)]
+    [ return $ emit ("import " <> importDecl)]
   match (StructDeclaration _ fields _) =
     let
       fields' = (\field -> ":" <> field) <$> fields
@@ -125,18 +125,30 @@ literals = mkPattern' match'
       -- To make it to the Elixir compatible def form and to support
       -- currying, take the first argument and make it a def, the rest
       -- of the arguments can be generated as anonymous functions
-      Just fun@(Function _ _ arguments body) ->
+      Just fun@(Function _ name arguments' body) ->
+        let arguments = trace ("Case dn :: \n" <> show fun <> "\n" ) arguments' in
         case arguments of
           (head:rest) ->
-            if head == "__typeClassInstanceDefn"
-            then
-              let curriedFnBody = (Block Nothing [(Function Nothing Nothing [] body)]) in
-                mconcat <$> sequence [ return $ emit ("def " <> ident <> " ")
-                                 , prettyPrintJS' body]
-            else
-              let curriedFnBody = (Block Nothing [(Function Nothing Nothing arguments body)]) in
-                mconcat <$> sequence [ return $ emit ("def " <> ident <> " ")
-                                 , prettyPrintJS' curriedFnBody]
+            case head of
+              "__typeClassInstanceDefn" -> 
+                let
+                  body' = case body of
+                            Block ss1 [(App ss2 (Var ss3 str) rst1)] -> Block ss1 [(App ss2 (Var ss3 ("tc" <> str)) rst1)]
+                            _ -> body
+                in
+                  mconcat <$> sequence [ return $ emit ("def " <> ident <> " ")
+                                       , prettyPrintJS' body']
+              _ ->
+                if name == (Just "__typeClassDefinition")
+                then
+                  let curriedFnBody = (Block Nothing [(Function Nothing Nothing arguments body)])
+                  in
+                    mconcat <$> sequence [ return $ emit ("def " <> "tc" <> ident <> " ")
+                                         , prettyPrintJS' curriedFnBody]
+                else
+                  let curriedFnBody = (Block Nothing [(Function Nothing Nothing arguments body)]) in
+                    mconcat <$> sequence [ return $ emit ("def " <> ident <> " ")
+                                         , prettyPrintJS' curriedFnBody]
           _ -> prettyPrintJS' body
       -- Just (fun@(Function _ _ arguments body)) ->
       --   case arguments of
