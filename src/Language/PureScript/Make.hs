@@ -300,7 +300,7 @@ inferForeignModules =
     inferForeignModule :: Either RebuildPolicy FilePath -> m (Maybe FilePath)
     inferForeignModule (Left _) = return Nothing
     inferForeignModule (Right path) = do
-      let jsFile = replaceExtension path "js"
+      let jsFile = replaceExtension path "ex"
       exists <- liftIO $ doesFileExist jsFile
       if exists
         then return (Just jsFile)
@@ -332,7 +332,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
   getOutputTimestamp mn = do
     dumpCoreFn <- asks optionsDumpCoreFn
     let filePath = T.unpack (runModuleName mn)
-        jsFile = outputDir </> filePath </> "index.js"
+        jsFile = outputDir </> filePath </> (filePath <> ".ex")
         externsFile = outputDir </> filePath </> "externs.json"
         coreFnFile = outputDir </> filePath </> "corefn.json"
         min3 js exts coreFn
@@ -363,7 +363,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
     sourceMaps <- lift $ asks optionsSourceMaps
     let (pjs, mappings) = if sourceMaps then prettyPrintJSWithSourceMaps rawJs else (prettyPrintJS rawJs, [])
     let filePath = T.unpack (runModuleName mn)
-        jsFile = outputDir </> filePath </> "index.js"
+        jsFile = outputDir </> filePath </> (filePath <> ".ex")
         mapFile = outputDir </> filePath </> "index.js.map"
         externsFile = outputDir </> filePath </> "externs.json"
         foreignFile = outputDir </> filePath </> "foreign.js"
