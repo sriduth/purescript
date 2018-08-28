@@ -48,9 +48,9 @@ literals = mkPattern' match'
     ]
   match (ObjectLiteral _ []) = return $ emit "{}"
   match (ObjectLiteral _ ps) = mconcat <$> sequence
-    [ return $ emit "{\n"
+    [ return $ emit "%{\n"
     , withIndent $ do
-        jss <- forM ps $ \(key, value) -> fmap ((objectPropertyToString key <> emit ": ") <>) . prettyPrintJS' $ value
+        jss <- forM ps $ \(key, value) -> fmap (((emit "\"") <> objectPropertyToString key <> (emit "\"") <> emit ": ") <>) . prettyPrintJS' $ value
         indentString <- currentIndent
         return $ intercalate (emit ",\n") $ map (indentString <>) jss
     , return $ emit "\n"
@@ -110,7 +110,7 @@ literals = mkPattern' match'
   match (Var _ ident) = return $ emit ident
 
   match q@(VariableIntroduction _ ident value) =
-    let value' = trace ("Variable intro :: \n" <> show q <> "\n") value in
+    let value' = value in
     case value' of
       
       -- | HACK:
@@ -126,7 +126,7 @@ literals = mkPattern' match'
       -- currying, take the first argument and make it a def, the rest
       -- of the arguments can be generated as anonymous functions
       Just fun@(Function _ name arguments' body) ->
-        let arguments = trace ("Case dn :: \n" <> show fun <> "\n" ) arguments' in
+        let arguments = arguments' in
         case arguments of
           (head:rest) ->
             case head of

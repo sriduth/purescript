@@ -195,13 +195,17 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
     extendObj obj sts
   valueToJs' e@(Abs (_, _, _, Just IsTypeClassConstructor) _ _) =
     let args = unAbs e
-    in return $ AST.Function Nothing (Just "__typeClassDefinition") (map identToJs args) (AST.Block Nothing $ map assign args)
+    in return $ AST.Function Nothing (Just "__typeClassDefinition") (map identToJs args) (AST.Block Nothing $ [methods args])
     where
+    --methods :: [Ident] -> AST
+    methods args =
+      let accString = (\name -> mkString $ runIdent name) in
+      (AST.VariableIntroduction Nothing "_methods" (Just (AST.ObjectLiteral Nothing (map (\x -> ((accString x), (AST.VariableIntroduction Nothing (runIdent x) Nothing))) args))))
     unAbs :: Expr Ann -> [Ident]
     unAbs (Abs _ arg val) = arg : unAbs val
     unAbs _ = []
     assign :: Ident -> AST
-    assign name = AST.Assignment Nothing (accessorString (mkString $ runIdent name) (AST.Var Nothing "this"))
+    assign name = AST.Assignment Nothing (accessorString (mkString $ runIdent name) (AST.Var Nothing "_methods"))
                                (var name)
   valueToJs' (Abs _ arg val) = do
     ret <- valueToJs val
@@ -214,7 +218,7 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
       Var (_, _, _, Just (IsConstructor _ fields)) name | length args == length fields ->
         return $ AST.Unary Nothing AST.New $ AST.App Nothing (qualifiedToJS id name) args'
       Var (_, _, _, Just IsTypeClassConstructor) name ->
-        return $ AST.Function Nothing Nothing ["__typeClassInstanceDefn"] $ AST.Block Nothing [AST.App Nothing (qualifiedToJS id name) args']
+        return $ (\x -> trace ("args'\n" <> show args' <> "\n") x)$ AST.Function Nothing Nothing ["__typeClassInstanceDefn"] $ AST.Block Nothing [AST.App Nothing (qualifiedToJS id name) args']
       _ -> flip (foldl (\fn a -> AST.App Nothing fn [a])) args' <$> valueToJs f
     where
     unApp :: Expr Ann -> [Expr Ann] -> (Expr Ann, [Expr Ann])
