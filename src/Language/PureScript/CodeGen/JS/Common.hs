@@ -14,7 +14,7 @@ import Language.PureScript.Names
 moduleNameToJs :: ModuleName -> Text
 moduleNameToJs (ModuleName pns) =
   let name = T.intercalate "_" (runProperName `map` pns)
-  in if nameIsJsBuiltIn name then "$$" <> name else name
+  in if nameIsJsBuiltIn name then "res__" <> name else name
 
 -- | Convert an 'Ident' into a valid JavaScript identifier:
 --
@@ -29,7 +29,7 @@ identToJs (GenIdent _ _) = internalError "GenIdent in identToJs"
 
 properToJs :: Text -> Text
 properToJs name
-  | nameIsJsReserved name || nameIsJsBuiltIn name = "$$" <> name
+  | nameIsJsReserved name || nameIsJsBuiltIn name = "res__" <> name
   | otherwise = T.concatMap identCharToText name
 
 -- | Test if a string is a valid AST identifier without escaping.
@@ -173,6 +173,7 @@ jsKeywords =
   , "void"
   , "while"
   , "with"
+  , "when"
   ]
 
 jsSometimesReserved :: [Text]

@@ -80,6 +80,8 @@ import           System.FilePath ((</>), takeDirectory, makeRelative, splitPath,
 import           System.IO.Error (tryIOError)
 import qualified Text.Parsec as Parsec
 
+import Debug.Trace (trace)
+
 -- | Progress messages from the make process
 data ProgressMessage
   = CompilingModule ModuleName
@@ -431,7 +433,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
 checkForeignDecls :: CF.Module ann -> FilePath -> SupplyT Make ()
 checkForeignDecls m path = do
   jsStr <- lift $ readTextFile path
-  js <- either (errorParsingModule . Bundle.UnableToParseModule) pure $ JS.parse (BU8.toString (B.toStrict jsStr)) path
+  js <- either (errorParsingModule . Bundle.UnableToParseModule) pure $ (\x -> trace ("JS :: " <> show x <> "\n") x) <$> JS.parse (BU8.toString (B.toStrict jsStr)) path
 
   foreignIdentsStrs <- either errorParsingModule pure $ getExps js
   foreignIdents <- either

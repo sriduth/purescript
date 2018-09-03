@@ -125,9 +125,12 @@ literals = mkPattern' match'
     , prettyPrintJS' fixedModuleDefn
     , currentIndent]
   match (ModuleImport _ moduleToImport importAlias') =
-    let importAlias = case importAlias' of
-                        Just alias -> ", as: " <> alias
-                        _ -> ", as: " <> moduleToImport
+    let underscoreAlias = (\alias -> intercalate "_" (T.splitOn "." alias))
+        importAlias = case importAlias' of
+                        Just alias ->
+                          ", as: " <> (underscoreAlias alias)
+                        _ ->
+                          ", as: " <> (underscoreAlias moduleToImport)
     in
     mconcat <$> sequence 
     [ return $ emit ("alias " <> moduleToImport <> importAlias)]
@@ -148,7 +151,7 @@ literals = mkPattern' match'
     return $ emit ident
 
   match x@(VariableIntroduction _ ident value') =
-    let value =  trace ("Variable Intro :: \n" <> show x <> "\n") value' in
+    let value = value' in
     case value of
       -- | If the unary operator is a new + a function application, we know for sure that
       -- it is the instatiation of a data structure
@@ -163,7 +166,7 @@ literals = mkPattern' match'
       -- is the creation of a data constructor, return the
       -- generated code directly
       Just (mod@(ModuleIntroduction _ _ _)) ->
-        let mod' = trace ("Module Introduction :: " <> show mod) mod in
+        let mod' = mod in
         prettyPrintJS' mod'
 
       -- | HACK:
@@ -345,7 +348,7 @@ lam :: Pattern PrinterState AST ((Maybe Text, [Text], Maybe SourceSpan), AST)
 lam = mkPattern match
   where
   match z@(Function ss name' args ret) =
-    let name = trace ("Function :: " <> show z <> "\n") name'
+    let name = name'
         body' = case ret of
                  -- | If we get an iife form of RHS, we can assume that we have a function binder
                  -- with where clause inside
@@ -442,7 +445,7 @@ prettyPrintJS' = A.runKleisli $ runPattern matchValue
   operators :: (Emit gen) => OperatorTable PrinterState AST gen
   operators =
     OperatorTable [ [ Wrap indexer $ \index val -> val <> emit "[" <> index <> emit "]" ]
-                  , [ Wrap accessor $ \prop val -> val <> emit "." <> emit prop ]
+                  , [ Wrap accessor $ \prop val -> (emit "Map.get(") <> val <> emit "," <> emit "\"" <> emit prop <> emit "\")"]
                   , [ Wrap app $ \args val -> val <> emit(".") <> emit "(" <> args <> emit ")" ]
                   , [ unary New "" ]
                   , [ Wrap lam $ \(name, args, ss) ret ->

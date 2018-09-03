@@ -341,8 +341,8 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
                             _ ->  AST.IfElse ss ifCond thens (Just (AST.Block Nothing [(mapper rst)]))
                        else
                          AST.IfElse ss ifCond thens elses
-                    _ -> internalError "lol"
-           _ -> internalError "lol"
+                    _ -> AST.Block Nothing [(head hd), (mapper rst)]
+           _ -> AST.Block Nothing []
            
       go :: [Text] -> [AST] -> [Binder Ann] -> m [AST]
       go _ done [] = return done
