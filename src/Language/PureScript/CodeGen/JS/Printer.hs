@@ -27,6 +27,7 @@ import Language.PureScript.PSString (PSString, decodeString, prettyPrintStringJS
 
 import Debug.Trace (trace)
 import Data.Maybe
+import Data.Char (toUpper)
 -- TODO (Christoph): Get rid of T.unpack / pack
 
 objectPropertyToString :: (Emit gen) => PSString -> gen
@@ -330,7 +331,8 @@ literals = mkPattern' match'
 accessor :: Pattern PrinterState AST (Text, AST)
 accessor = mkPattern match
   where
-  match (Indexer _ (StringLiteral _ prop) val) =
+  match a@(Indexer _ (StringLiteral _ prop) val') =
+    let val = trace ("Indexer :: " <> show a) val' in
     case decodeString prop of
       Just s | not (identNeedsEscaping s) -> Just (s, val)
       _ -> Nothing
@@ -445,7 +447,13 @@ prettyPrintJS' = A.runKleisli $ runPattern matchValue
   operators :: (Emit gen) => OperatorTable PrinterState AST gen
   operators =
     OperatorTable [ [ Wrap indexer $ \index val -> val <> emit "[" <> index <> emit "]" ]
-                  , [ Wrap accessor $ \prop val -> (emit "Map.get(") <> val <> emit "," <> emit "\"" <> emit prop <> emit "\")"]
+                  , [ Wrap accessor $ \prop val ->
+                        let (x:_) = T.unpack prop
+                        in
+                          if (toUpper x) == x then
+                            (emit "Map.get(") <> val <> emit "," <> emit "\"" <> emit prop <> emit "\")"
+                          else
+                            val <> emit "." <> emit prop]
                   , [ Wrap app $ \args val -> val <> emit(".") <> emit "(" <> args <> emit ")" ]
                   , [ unary New "" ]
                   , [ Wrap lam $ \(name, args, ss) ret ->
