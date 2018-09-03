@@ -148,28 +148,8 @@ literals = mkPattern' match'
     return $ emit ident
 
   match x@(VariableIntroduction _ ident value') =
-    let value = trace (show x) value' in
+    let value =  trace ("Variable Intro :: \n" <> show x <> "\n") value' in
     case value of
-      -- | If we get an iife form of RHS, we can assume that we have a function binder
-      -- with where clause inside
-      Just app@(App _ (Function _ Nothing [] body) []) ->
-        let ast = case body of
-                    (Block _ binders) ->
-                      let binds =
-                            ((\binder ->
-                                case binder of
-                                  (VariableIntroduction _ varName (Just fn@(Function ss name args body))) ->
-                                    let lhs = Var Nothing varName
-                                        rhs = fn in
-                                      (Assignment Nothing lhs rhs)
-                                  _ -> binder
-                             ) <$> binders)
-                      in
-                        Function Nothing (Just ident) [] (Block Nothing binds)
-                    _ -> app
-        in
-          prettyPrintJS' ast
-          
       -- | If the unary operator is a new + a function application, we know for sure that
       -- it is the instatiation of a data structure
       Just un@(Unary _ New rst) ->
@@ -365,18 +345,36 @@ lam :: Pattern PrinterState AST ((Maybe Text, [Text], Maybe SourceSpan), AST)
 lam = mkPattern match
   where
   match z@(Function ss name' args ret) =
-    let name = trace ("Function :: " <> show z <> "\n") name' in
+    let name = trace ("Function :: " <> show z <> "\n") name'
+        body' = case ret of
+                 -- | If we get an iife form of RHS, we can assume that we have a function binder
+                 -- with where clause inside
+                 Block ss binders -> 
+                   let binds =
+                         ((\binder ->
+                              case binder of
+                                (VariableIntroduction _ varName (Just fn@(Function ss name args body))) ->
+                                  let lhs = Var Nothing varName
+                                      rhs = fn in
+                                    (Assignment Nothing lhs rhs)
+                                _ -> binder
+                          ) <$> binders)
+                   in
+                     Block ss binds
+                 _ -> ret
+    in
     -- | HACK
     -- For anonymous functions (where name is Nothing),
     -- replace the body of the function by a FnBlock, which does not
     -- insert a `do` in the beginning of the block
     case name of
       Nothing ->
-        let (Block _ body) =  ret
-            ret' = (FnBlock Nothing body) in
+        let (Block _ body) = body'
+            ret' = (FnBlock Nothing body)
+        in
           Just((name, args, ss), ret')
       _ ->
-        Just ((name, [], ss), ret)
+        Just ((name, [], ss), body')
   match _ = Nothing
 
 app :: (Emit gen) => Pattern PrinterState AST (gen, AST)
