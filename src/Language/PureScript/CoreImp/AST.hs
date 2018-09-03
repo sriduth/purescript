@@ -62,6 +62,7 @@ data AST
   -- ^ An array indexer expression
   | ObjectLiteral (Maybe SourceSpan) [(PSString, AST)]
   -- ^ An object literal
+  | StructLiteral (Maybe SourceSpan) Text [(PSString, AST)]
   | Function (Maybe SourceSpan) (Maybe Text) [Text] AST
   -- ^ A function introduction (optional name, arguments, body)
   | App (Maybe SourceSpan) AST [AST]
@@ -94,7 +95,7 @@ data AST
   -- ^ Commented JavaScript
   | ModuleIntroduction (Maybe SourceSpan) Text (Maybe AST)
   -- ^ defmodule Modulename do
-  | ModuleImport (Maybe SourceSpan) Text (Maybe AST)
+  | ModuleImport (Maybe SourceSpan) Text (Maybe Text)
   -- ^ Elixir style use, import and alias
   | StructDeclaration (Maybe SourceSpan)  [Text] (Maybe AST)
   -- ^ Elixir named function representaion, acts as a wrapper
@@ -131,7 +132,7 @@ withSourceSpan withSpan = go where
   go (Throw _ js) = Throw ss js
   go (InstanceOf _ j1 j2) = InstanceOf ss j1 j2
   go (Comment _ com j) = Comment ss com j
-
+  
 getSourceSpan :: AST -> Maybe SourceSpan
 getSourceSpan = go where
   go :: AST -> Maybe SourceSpan
@@ -163,7 +164,8 @@ getSourceSpan = go where
   go (StructDeclaration ss _ _) = ss
   go (FnBlock ss _) = ss
   go (IfElseBlock ss _ _ _) = ss
-
+  go (StructLiteral ss _ _) = ss
+  
 everywhere :: (AST -> AST) -> AST -> AST
 everywhere f = go where
   go :: AST -> AST

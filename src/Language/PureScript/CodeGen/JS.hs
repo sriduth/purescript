@@ -26,7 +26,7 @@ import Data.String (fromString)
 import Data.Text (Text, unpack)
 import qualified Data.Text as T
 
-import Language.PureScript.AST.SourcePos
+import Language.PureScript.AST.SourcePos 
 import Language.PureScript.CodeGen.JS.Common as Common
 import Language.PureScript.CoreImp.AST (AST, everywhereTopDownM, withSourceSpan)
 import qualified Language.PureScript.CoreImp.AST as AST
@@ -67,14 +67,15 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
 --    let elixirImports = (\(my, importedModule) ->
 --                           AST.ModuleImport Nothing (T.pack $ "   use " ++ (unpack $ runModuleName importedModule)) Nothing) <$> imps
     --let strict = AST.StringLiteral Nothing "use strict"
-    let header = AST.ModuleIntroduction Nothing (runModuleName mn)
-    let foreign' = [AST.VariableIntroduction Nothing "$foreign" foreign_ | not $ null foreigns || isNothing foreign_]
+    let moduleName = runModuleName mn
+    let header = AST.ModuleIntroduction Nothing moduleName
+    let foreign' = [AST.ModuleImport Nothing (moduleName  <> ".Foreign") (Just "Foreign")]
     let moduleBody = foreign' ++ jsImports ++ concat optimized
     let foreignExps = exps `intersect` (fst `map` foreigns)
     let standardExps = exps \\ foreignExps
     let exps' = AST.ObjectLiteral Nothing $ map (mkString . runIdent &&& AST.Var Nothing . identToJs) standardExps
                                ++ map (mkString . runIdent &&& foreignIdent) foreignExps
-    return $ [header $ Just (AST.Block Nothing moduleBody)] -- ++ [AST.BlockEnd Nothing (T.pack "end") Nothing]
+    return [header $ Just (AST.Block Nothing moduleBody)] -- ++ [AST.BlockEnd Nothing (T.pack "end") Nothing]
   where
 
   -- | Extracts all declaration names from a binding group.
@@ -215,10 +216,10 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
     args' <- mapM valueToJs args
     case f of
       Var (_, _, _, Just IsNewtype) _ -> return (head args')
-      Var (_, _, _, Just (IsConstructor _ fields)) name | length args == length fields ->
-        return $ AST.Unary Nothing AST.New $ AST.App Nothing (qualifiedToJS id name) args'
+      Var (_, _, _, Just (IsConstructor _ fields)) name' | length args == length fields ->
+        return $ AST.App Nothing (AST.Indexer Nothing (AST.StringLiteral Nothing "create") $ (qualifiedToJS id name')) args'
       Var (_, _, _, Just IsTypeClassConstructor) name ->
-        return $ (\x -> trace ("args'\n" <> show args' <> "\n") x)$ AST.Function Nothing Nothing ["__typeClassInstanceDefn"] $ AST.Block Nothing [AST.App Nothing (qualifiedToJS id name) args']
+        return $ AST.Function Nothing Nothing ["__typeClassInstanceDefn"] $ AST.Block Nothing [AST.App Nothing (qualifiedToJS id name) args']
       _ -> flip (foldl (\fn a -> AST.App Nothing fn [a])) args' <$> valueToJs f
     where
     unApp :: Expr Ann -> [Expr Ann] -> (Expr Ann, [Expr Ann])
@@ -238,32 +239,33 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
     ds' <- concat <$> mapM bindToJs ds
     ret <- valueToJs val
     return $ AST.App Nothing (AST.Function Nothing Nothing [] (AST.Block Nothing (ds' ++ [AST.Return Nothing ret]))) []
-  valueToJs' (Constructor (_, _, _, Just IsNewtype) _ (ProperName ctor) _) =
-   -- return $ AST.ModuleIntroduction Nothing (properToJs ctor) Nothing
-    return $ AST.VariableIntroduction Nothing (properToJs ctor) (Just $
-                AST.ObjectLiteral Nothing [("create",
-                  AST.Function Nothing Nothing ["value"]
-                    (AST.Block Nothing [AST.Return Nothing $ AST.Var Nothing "value"]))])
+  -- valueToJs' (Constructor (_, _, _, Just IsNewtype) _ (ProperName ctor) _) =
+  --   return $ AST.ModuleIntroduction Nothing (properToJs ctor)
+  --     $ Just (AST.Block Nothing [ (AST.StructDeclaration Nothing [] Nothing)
+  --                               , (AST.Function Nothing (Just "create") [] (AST.Block Nothing []))
+  --                               , (AST.Function Nothing (Just "value") [] (AST.Block Nothing [AST.StructLiteral Nothing (properToJs ctor) []]))])
+--    return $ AST.ModuleIntroduction Nothing (properToJs ctor) Nothing
+    -- return $ AST.VariableIntroduction Nothing (properToJs ctor) (Just $
+    --             AST.ObjectLiteral Nothing [("create",
+    --               AST.Function Nothing Nothing ["value"]
+    --                 (AST.Block Nothing [AST.Return Nothing $ AST.Var Nothing "value"]))])
+
   valueToJs' (Constructor _ _ (ProperName ctor) []) =
-    -- return $ AST.ModuleIntroduction Nothing (properToJs ctor) Nothing
     return $ AST.ModuleIntroduction Nothing (properToJs ctor)
-      $ Just (AST.Block Nothing [(AST.StructDeclaration Nothing [] Nothing)])
-    -- return $ iife (properToJs ctor) [ AST.Function Nothing (Just (properToJs ctor)) [] (AST.Block Nothing [])
-    --        , AST.Assignment Nothing (accessorString "value" (AST.Var Nothing (properToJs ctor)))
-    --             (AST.Unary Nothing AST.New $ AST.App Nothing (AST.Var Nothing (properToJs ctor)) []) ]
+      $ Just (AST.Block Nothing [ (AST.StructDeclaration Nothing [] Nothing)
+                                , (AST.Function Nothing (Just "create") [] (AST.Block Nothing []))
+                                , (AST.Function Nothing (Just "value") [] (AST.Block Nothing [AST.StructLiteral Nothing (properToJs ctor) []]))])
+
   valueToJs' (Constructor _ _ (ProperName ctor) fields) =
-    --return $ AST.ModuleIntroduction Nothing (properToJs ctor) Nothing
-    return $ AST.ModuleIntroduction Nothing (properToJs ctor)
-     $ Just (AST.Block Nothing [(AST.StructDeclaration Nothing (runIdent <$> fields) Nothing)])
-    -- let constructor =
-    --       let body = [ AST.Assignment Nothing ((accessorString $ mkString $ identToJs f) (AST.Var Nothing "this")) (var f) | f <- fields ]
-    --       in AST.Function Nothing (Just (properToJs ctor)) (identToJs `map` fields) (AST.Block Nothing body)
-    --     createFn =
-    --       let body = AST.Unary Nothing AST.New $ AST.App Nothing (AST.Var Nothing (properToJs ctor)) (var `map` fields)
-    --       in foldr (\f inner -> AST.Function Nothing Nothing [identToJs f] (AST.Block Nothing [AST.Return Nothing inner])) body fields
-    -- in return $ iife (properToJs ctor) [ constructor
-    --                       , AST.Assignment Nothing (accessorString "create" (AST.Var Nothing (properToJs ctor))) createFn
-    --                       ]
+    let structName = properToJs ctor
+        accString = (\name -> mkString $ runIdent name)
+        makeStruct = AST.StructLiteral Nothing structName (map (\x -> ((accString x), (AST.VariableIntroduction Nothing (runIdent x) Nothing))) (fields))
+        makeCurriedFunction = foldl (\function arg -> AST.Function Nothing Nothing [arg] (AST.Block Nothing [function])) (makeStruct) (runIdent <$> fields)  
+    in
+    return $ AST.ModuleIntroduction Nothing structName
+     $ Just (AST.Block Nothing [(AST.StructDeclaration Nothing (runIdent <$> fields) Nothing),
+                                (AST.VariableIntroduction Nothing "create"
+                                 (Just makeCurriedFunction))])
 
   iife :: Text -> [AST] -> AST
   iife v exprs = AST.App Nothing (AST.Function Nothing Nothing [] (AST.Block Nothing $ exprs ++ [AST.Return Nothing $ AST.Var Nothing v])) []
@@ -410,8 +412,8 @@ moduleToJs (Module coms mn imps exps foreigns decls) foreign_ =
     internalError "binderToJs: Invalid ConstructorBinder in binderToJs"
   binderToJs' varName done (NamedBinder _ ident binder) = do
     js <- binderToJs varName done binder
-    return [AST.ModuleIntroduction Nothing (T.pack "test") Nothing]
-    --return (AST.VariableIntroduction Nothing (identToJs ident) (Just (AST.Var Nothing varName)) : js)
+    --return [AST.ModuleIntroduction Nothing (T.pack "test") Nothing]
+    return (AST.VariableIntroduction Nothing (identToJs ident) (Just (AST.Var Nothing varName)) : js)
 
   literalToBinderJS :: Text -> [AST] -> Literal (Binder Ann) -> m [AST]
   literalToBinderJS varName done (NumericLiteral num) =

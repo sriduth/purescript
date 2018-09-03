@@ -25,10 +25,17 @@ import Language.PureScript.Crash
 import Language.PureScript.Pretty.Common
 import Language.PureScript.PSString (PSString, decodeString, prettyPrintStringJS)
 
-import System.IO.Unsafe
-import Debug.Trace
+import Debug.Trace (trace)
 import Data.Maybe
 -- TODO (Christoph): Get rid of T.unpack / pack
+
+objectPropertyToString :: (Emit gen) => PSString -> gen
+objectPropertyToString s =
+  emit $ case decodeString s of
+           Just s' | not (identNeedsEscaping s') ->
+                       s'
+           _ ->
+             prettyPrintStringJS s
 
 literals :: (Emit gen) => Pattern PrinterState AST gen
 literals = mkPattern' match'
@@ -46,6 +53,17 @@ literals = mkPattern' match'
     , intercalate (emit ", ") <$> forM xs prettyPrintJS'
     , return $ emit " ]"
     ]
+  match (StructLiteral _ name []) = return $ emit ("%" <> name <> "{}")
+  match (StructLiteral _ name ps) = mconcat <$> sequence
+    [ return $ emit ("%" <> name <> "{\n")
+    , withIndent $ do
+        jss <- forM ps $ \(key, value) -> fmap (((emit "\"") <> objectPropertyToString key <> (emit "\"") <> emit ": ") <>) . prettyPrintJS' $ value
+        indentString <- currentIndent
+        return $ intercalate (emit ",\n") $ map (indentString <>) jss
+    , return $ emit "\n"
+    , currentIndent
+    , return $ emit "}"
+    ]
   match (ObjectLiteral _ []) = return $ emit "{}"
   match (ObjectLiteral _ ps) = mconcat <$> sequence
     [ return $ emit "%{\n"
@@ -57,14 +75,6 @@ literals = mkPattern' match'
     , currentIndent
     , return $ emit "}"
     ]
-    where
-    objectPropertyToString :: (Emit gen) => PSString -> gen
-    objectPropertyToString s =
-      emit $ case decodeString s of
-        Just s' | not (identNeedsEscaping s') ->
-          s'
-        _ ->
-          prettyPrintStringJS s
 
 -- [IfElse
 --  Nothing
@@ -92,37 +102,93 @@ literals = mkPattern' match'
     , currentIndent
     , return $ emit "end"
     ]
-  match (ModuleIntroduction _ name (Just rest)) =
+  match m@(ModuleIntroduction _ name (Just rest)) =
+    -- | if the top level binders of the module introduction has a VariableIntroduction
+    -- where the RHS of the same is the instantiation of a data constructor or
+    -- the result of any function application make it a top level function `def`
+    -- in the generated elixir code.
+    let fixedModuleDefn =
+          case rest of
+            Block _ bindings ->
+              Block Nothing ((\binding ->
+                                 case binding of
+                                   (VariableIntroduction _ name (Just app@(App ss x y))) ->
+                                     Function Nothing (Just name) [] (Block Nothing [app])
+                                   (VariableIntroduction _ name (Just index@(Indexer _ _ _))) ->
+                                     Function Nothing (Just name) [] (Block Nothing [index])
+                                   _ -> binding
+                            ) <$> bindings)
+            _ -> rest
+    in
     mconcat <$> sequence
     [ return $ emit ("defmodule " <> name <> " ")
-    , prettyPrintJS' rest
+    , prettyPrintJS' fixedModuleDefn
     , currentIndent]
-  match (ModuleImport _ importDecl _) = mconcat <$> sequence 
-    [ return $ emit ("import " <> importDecl)]
+  match (ModuleImport _ moduleToImport importAlias') =
+    let importAlias = case importAlias' of
+                        Just alias -> ", as: " <> alias
+                        _ -> ", as: " <> moduleToImport
+    in
+    mconcat <$> sequence 
+    [ return $ emit ("alias " <> moduleToImport <> importAlias)]
+    
   match (StructDeclaration _ fields _) =
     let
       fields' = (\field -> ":" <> field) <$> fields
     in
       mconcat <$> sequence
-      [ currentIndent
-      , return $ emit ("defstruct [" <> (intercalate ", " fields') <> "]")]
+      [return $ emit ("defstruct [" <> (intercalate ", " fields') <> "]")]
 
-  match (Var _ ident) = return $ emit ident
+  -- |
+  -- If the varible binding is $foreign, then use Foreign
+  match (Var _ ident') =
+    let ident = case ident' of
+                  "$foreign" -> "Foreign"
+                  _ -> ident' in
+    return $ emit ident
 
-  match q@(VariableIntroduction _ ident value) =
-    let value' = value in
-    case value' of
+  match x@(VariableIntroduction _ ident value') =
+    let value = trace (show x) value' in
+    case value of
+      -- | If we get an iife form of RHS, we can assume that we have a function binder
+      -- with where clause inside
+      Just app@(App _ (Function _ Nothing [] body) []) ->
+        let ast = case body of
+                    (Block _ binders) ->
+                      let binds =
+                            ((\binder ->
+                                case binder of
+                                  (VariableIntroduction _ varName (Just fn@(Function ss name args body))) ->
+                                    let lhs = Var Nothing varName
+                                        rhs = fn in
+                                      (Assignment Nothing lhs rhs)
+                                  _ -> binder
+                             ) <$> binders)
+                      in
+                        Function Nothing (Just ident) [] (Block Nothing binds)
+                    _ -> app
+        in
+          prettyPrintJS' ast
+          
+      -- | If the unary operator is a new + a function application, we know for sure that
+      -- it is the instatiation of a data structure
+      Just un@(Unary _ New rst) ->
+        prettyPrintJS' $ case rst of
+                           app@(App _ (Var _ fnName) arguments) ->
+                             Function Nothing (Just ident) [] (Block Nothing [app])
+                           _ -> un
       
       -- | HACK:
       -- In a variable introduction, if the right hand side
       -- is the creation of a data constructor, return the
       -- generated code directly
       Just (mod@(ModuleIntroduction _ _ _)) ->
-        prettyPrintJS' mod
+        let mod' = trace ("Module Introduction :: " <> show mod) mod in
+        prettyPrintJS' mod'
 
       -- | HACK:
       -- All function invocations are of the form let function = ...
-      -- To make it to the Elixir compatible def form and to support
+      -- To make it to the Elixir co mpatible def form and to support
       -- currying, take the first argument and make it a def, the rest
       -- of the arguments can be generated as anonymous functions
       Just fun@(Function _ name arguments' body) ->
@@ -138,6 +204,11 @@ literals = mkPattern' match'
                 in
                   mconcat <$> sequence [ return $ emit ("def " <> ident <> " ")
                                        , prettyPrintJS' body']
+                  
+              -- "create" ->
+              --   let fun' = fun in
+              --   prettyPrintJS' fun'
+              
               _ ->
                 if name == (Just "__typeClassDefinition")
                 then
@@ -150,12 +221,6 @@ literals = mkPattern' match'
                     mconcat <$> sequence [ return $ emit ("def " <> ident <> " ")
                                          , prettyPrintJS' curriedFnBody]
           _ -> prettyPrintJS' body
-      -- Just (fun@(Function _ _ arguments body)) ->
-      --   case arguments of
-      --     (head:rest) ->
-      --       let curriedAnonFnBody = (FnBlock Nothing [(Function Nothing Nothing [head] body)]) in
-      --         prettyPrintJS' curriedAnonFnBody
-      --     _ -> prettyPrintJS' fun
           
       _ ->
         mconcat <$> sequence
@@ -291,14 +356,16 @@ accessor = mkPattern match
 indexer :: (Emit gen) => Pattern PrinterState AST (gen, AST)
 indexer = mkPattern' match
   where
-  match (Indexer _ index val) = (,) <$> prettyPrintJS' index <*> pure val
+  match (Indexer _ index val') =
+    let val = val' in
+    (,) <$> prettyPrintJS' index <*> pure val
   match _ = mzero
 
 lam :: Pattern PrinterState AST ((Maybe Text, [Text], Maybe SourceSpan), AST)
 lam = mkPattern match
   where
   match z@(Function ss name' args ret) =
-    let name = name' in
+    let name = trace ("Function :: " <> show z <> "\n") name' in
     -- | HACK
     -- For anonymous functions (where name is Nothing),
     -- replace the body of the function by a FnBlock, which does not
@@ -308,7 +375,8 @@ lam = mkPattern match
         let (Block _ body) =  ret
             ret' = (FnBlock Nothing body) in
           Just((name, args, ss), ret')
-      _ -> Just ((name, args, ss), ret)
+      _ ->
+        Just ((name, [], ss), ret)
   match _ = Nothing
 
 app :: (Emit gen) => Pattern PrinterState AST (gen, AST)
@@ -377,7 +445,7 @@ prettyPrintJS' = A.runKleisli $ runPattern matchValue
   operators =
     OperatorTable [ [ Wrap indexer $ \index val -> val <> emit "[" <> index <> emit "]" ]
                   , [ Wrap accessor $ \prop val -> val <> emit "." <> emit prop ]
-                  , [ Wrap app $ \args val ->  val <> emit(".") <> emit "(" <> args <> emit ")" ]
+                  , [ Wrap app $ \args val -> val <> emit(".") <> emit "(" <> args <> emit ")" ]
                   , [ unary New "" ]
                   , [ Wrap lam $ \(name, args, ss) ret ->
                         addMapping' ss <>
@@ -401,7 +469,7 @@ prettyPrintJS' = A.runKleisli $ runPattern matchValue
                     , binary    LessThanOrEqualTo    "<="
                     , binary    GreaterThan          ">"
                     , binary    GreaterThanOrEqualTo ">="
-                    , AssocR instanceOf $ \v1 v2 -> v1 <> emit ".__struct__ ==" <> v2 ]
+                    , AssocR instanceOf $ \v1 v2 -> v1 <> emit ".__struct__ == " <> v2 ]
                   , [ binary    EqualTo              "==="
                     , binary    NotEqualTo           "!==" ]
                   , [ binary    BitwiseAnd           "&" ]

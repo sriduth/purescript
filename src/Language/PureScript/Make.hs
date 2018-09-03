@@ -345,6 +345,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
     let path = outputDir </> T.unpack (runModuleName mn) </> "externs.json"
     (path, ) <$> readTextFile path
 
+  -- | Node: Skip check for foreign modules till we implement for Elixir
   codegen :: CF.Module CF.Ann -> Environment -> Externs -> SupplyT Make ()
   codegen m _ exts = do
     let mn = CF.moduleName m
@@ -354,7 +355,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
             tell $ errorMessage $ UnnecessaryFFIModule mn path
             return Nothing
         | otherwise -> do
-            checkForeignDecls m path
+            -- checkForeignDecls m path
             return $ Just $ Imp.App Nothing (Imp.Var Nothing "require") [Imp.StringLiteral Nothing "./foreign"]
       Nothing | requiresForeign m -> throwError . errorMessage $ MissingFFIModule mn
               | otherwise -> return Nothing
